@@ -1,7 +1,7 @@
 class BrigadeAssistant {
   constructor() {
     this.quarters = [];
-    this.inventory = {};
+    this.cellsByQuarter = {}; // кэш клеток по кварталу
     this.init();
   }
 
@@ -19,6 +19,33 @@ class BrigadeAssistant {
       this.quarters = await response.json();
     } catch (error) {
       console.error('Failed to load quarters:', error);
+    }
+  }
+
+  async loadCells(quarterId) {
+    if (this.cellsByQuarter[quarterId]) return this.cellsByQuarter[quarterId];
+    try {
+      const r = await fetch('/api/inventory/' + encodeURIComponent(quarterId));
+      const data = await r.json();
+      const cells = Object.keys(data.cells || {}).sort((a, b) => +a - +b);
+      this.cellsByQuarter[quarterId] = cells;
+      return cells;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  async onQuarterChange() {
+    const qSel = document.getElementById('quarter-sel');
+    const cSel = document.getElementById('cell-sel');
+    cSel.innerHTML = '<option value="">Клетка...</option>';
+    if (!qSel.value) return;
+    const cells = await this.loadCells(qSel.value);
+    for (const c of cells) {
+      const opt = document.createElement('option');
+      opt.value = c;
+      opt.textContent = 'Клетка ' + c;
+      cSel.appendChild(opt);
     }
   }
 
@@ -40,8 +67,21 @@ class BrigadeAssistant {
           </div>
 
           <div class="form-group">
-            <label>Ввод данных (голосом или вручную):</label>
-            <textarea id="input" placeholder="Примеры:&#10;квартал 1 клетка 1 иванов с 1 по 5&#10;Лена с 6 по 10            (квартал/клетка наследуются)&#10;Петров 11, 12, 13&#10;&#10;Или строгий формат:&#10;Квартал 1, Клетка 1: Иванов - с 1 по 3; Петров - 6, 8"></textarea>
+            <label>Квартал и клетка (по умолчанию — для строк без явного указания):</label>
+            <div class="row-2cols">
+              <select id="quarter-sel" onchange="app.onQuarterChange()">
+                <option value="">Квартал...</option>
+                ${this.quarters.map(q => `<option value="${q.id}">${q.name}</option>`).join('')}
+              </select>
+              <select id="cell-sel">
+                <option value="">Клетка...</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>Сотрудники (голосом или вручную):</label>
+            <textarea id="input" placeholder="Иванов с 1 по 5; Лена 6, 7&#10;Петров с 8 по 10&#10;&#10;Голосом: «иванов с первого по пятый», (пауза) «лена шестой седьмой»"></textarea>
             <div class="voice-row">
               <button type="button" id="voice-btn" onclick="app.toggleVoice()" class="voice-btn">🎤 Голос</button>
               <span id="voice-status"></span>
@@ -89,10 +129,12 @@ class BrigadeAssistant {
   async process() {
     const date = document.getElementById('date').value;
     const input = document.getElementById('input').value;
+    const quarter = document.getElementById('quarter-sel').value;
+    const cell = document.getElementById('cell-sel').value;
     const resultDiv = document.getElementById('result');
 
     if (!date || !input.trim()) {
-      this.showResult('❌ Некорректный формат ввода', true, resultDiv);
+      this.showResult('❌ Введи дату и хотя бы одну строку с сотрудником', true, resultDiv);
       return;
     }
 
@@ -100,7 +142,7 @@ class BrigadeAssistant {
       const response = await fetch('/api/process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date, input })
+        body: JSON.stringify({ date, input, quarter, cell })
       });
 
       const result = await response.json();

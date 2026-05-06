@@ -75,13 +75,13 @@ app.get('/api/inventory/:quarter', (req, res) => {
 // Обработка ввода данных (текстовый формат)
 app.post('/api/process', async (req, res) => {
   try {
-    const { date, input } = req.body;
+    const { date, input, quarter, cell } = req.body;
 
     if (!date || !input) {
       return res.status(400).json({ error: 'Некорректный формат ввода' });
     }
 
-    const { entries } = parser.parse(input, date);
+    const { entries } = parser.parse(input, date, { quarter, cell });
     const report = parser.formatReport(date, entries, inventory);
 
     for (const entry of entries) {

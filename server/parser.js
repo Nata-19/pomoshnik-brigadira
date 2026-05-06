@@ -82,12 +82,13 @@ class DataParser {
 
     // Без диапазона: "иванов 1 2 3 ряд" или "иванов первый второй ряд"
     const numbers = [];
-    const tokens = rest.split(/\s+/);
+    // Разбиваем по пробелам И запятым, отбрасываем пустые
+    const tokens = rest.split(/[\s,]+/).filter(Boolean);
     const nameTokens = [];
     for (const tok of tokens) {
       if (/^\d+$/.test(tok)) {
         numbers.push(tok);
-      } else if (!/^(ряд|ряды|и|,)$/i.test(tok) && numbers.length === 0) {
+      } else if (!/^(ряд|ряды|и)$/i.test(tok) && numbers.length === 0) {
         nameTokens.push(tok);
       }
     }
@@ -99,7 +100,7 @@ class DataParser {
     return line;
   }
 
-  parse(input, date) {
+  parse(input, date, defaults = {}) {
     const errors = [];
     const entries = [];
     const usedRows = new Set(); // для проверки пересечений
@@ -111,7 +112,10 @@ class DataParser {
 
     // Разбиваем по блокам (квартал, клетка)
     const lines = input.split('\n').filter(l => l.trim());
-    const ctx = { lastQuarter: null, lastCell: null };
+    const ctx = {
+      lastQuarter: defaults.quarter || null,
+      lastCell: defaults.cell || null
+    };
 
     for (let rawLine of lines) {
       const line = this.normalizeInput(rawLine, ctx);

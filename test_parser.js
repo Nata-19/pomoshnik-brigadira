@@ -15,11 +15,34 @@ const tests = [
     'квартал 1 клетка 2 иванов с 1 по 3\nКвартал 2, Клетка 1: Петров - с 5 по 7'],
 ];
 
+const defaultsTests = [
+  ['С selectorm: квартал/клетка из формы, фамилии в текстарее',
+   'Иванов с 1 по 5\nЛена 6, 7\nПетров с 8 по 10',
+   { quarter: '1', cell: '1' }],
+  ['Selectors + текст содержит свой квартал — текст побеждает',
+   'Иванов с 1 по 3\nКвартал 2 клетка 1 петров с 5 по 7',
+   { quarter: '1', cell: '1' }],
+];
+
 for (const [desc, input] of tests) {
   console.log('\n--- ' + desc + ' ---');
   console.log('INPUT:', JSON.stringify(input));
   try {
     const r = p.parse(input, '2026-05-07');
+    for (const e of r.entries) {
+      console.log('  ✓ ' + e.employee + ' (кв.' + e.quarter + ', кл.' + e.cell + ', ряды [' + e.rows.join(',') + ']) = ' + e.bushes + ' кустов');
+    }
+  } catch (e) {
+    console.log('  ✗ ERR: ' + e.message);
+  }
+}
+
+console.log('\n=== С контекстом из selector ===');
+for (const [desc, input, defaults] of defaultsTests) {
+  console.log('\n--- ' + desc + ' ---');
+  console.log('INPUT:', JSON.stringify(input), 'DEFAULTS:', JSON.stringify(defaults));
+  try {
+    const r = p.parse(input, '2026-05-07', defaults);
     for (const e of r.entries) {
       console.log('  ✓ ' + e.employee + ' (кв.' + e.quarter + ', кл.' + e.cell + ', ряды [' + e.rows.join(',') + ']) = ' + e.bushes + ' кустов');
     }

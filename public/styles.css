@@ -149,6 +149,12 @@ button:active {
     display: block;
 }
 
+.row-2cols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
 .voice-row {
     display: flex;
     align-items: center;
