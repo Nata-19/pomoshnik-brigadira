@@ -147,6 +147,7 @@ class BrigadeAssistant {
     this.recognition.lang = 'ru-RU';
     this.recognition.continuous = true;
     this.recognition.interimResults = false;
+    this.shouldKeepRecording = false;
 
     this.recognition.onresult = (e) => {
       let transcript = '';
@@ -161,14 +162,41 @@ class BrigadeAssistant {
     };
 
     this.recognition.onend = () => {
+      // Если пользователь не нажимал «Стоп» — автоматически перезапускаем,
+      // потому что браузер сам глушит сессию после паузы в речи.
+      if (this.shouldKeepRecording) {
+        setTimeout(() => {
+          if (this.shouldKeepRecording) {
+            try {
+              this.recognition.start();
+            } catch (err) {
+              // start() кидает, если сессия ещё не успела закрыться — повторим чуть позже
+              setTimeout(() => {
+                if (this.shouldKeepRecording) {
+                  try { this.recognition.start(); } catch (_) {}
+                }
+              }, 300);
+            }
+          }
+        }, 100);
+        return;
+      }
       this.isRecording = false;
       this.updateVoiceUI();
     };
 
     this.recognition.onerror = (e) => {
+      const statusEl = document.getElementById('voice-status');
+      // 'no-speech' — нормальная пауза, продолжаем (onend перезапустит)
+      // 'aborted' — браузер просто прервал, тоже продолжаем
+      if (e.error === 'no-speech' || e.error === 'aborted') {
+        if (statusEl) statusEl.textContent = '🔴 Запись... (пауза)';
+        return;
+      }
+      // Реальные ошибки — останавливаемся
+      this.shouldKeepRecording = false;
       this.isRecording = false;
       this.updateVoiceUI();
-      const statusEl = document.getElementById('voice-status');
       if (statusEl) statusEl.textContent = '❌ Ошибка: ' + e.error;
     };
   }
@@ -176,9 +204,15 @@ class BrigadeAssistant {
   toggleVoice() {
     if (!this.recognition) return;
     if (this.isRecording) {
+      this.shouldKeepRecording = false;
       this.recognition.stop();
     } else {
-      this.recognition.start();
+      this.shouldKeepRecording = true;
+      try {
+        this.recognition.start();
+      } catch (err) {
+        // Если уже запущено — игнорируем
+      }
       this.isRecording = true;
       this.updateVoiceUI();
     }

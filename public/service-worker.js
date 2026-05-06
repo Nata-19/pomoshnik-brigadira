@@ -1,4 +1,4 @@
-const CACHE_NAME = 'brigade-v1';
+const CACHE_NAME = 'brigade-v3';
 const urlsToCache = [
   '/',
   '/index.html',
@@ -37,33 +37,25 @@ self.addEventListener('fetch', event => {
     return;
   }
 
+  const url = new URL(event.request.url);
+
+  // API-запросы — всегда сеть, не кэшируем (данные меняются)
+  if (url.pathname.startsWith('/api/')) {
+    return; // браузер обработает сам, без вмешательства SW
+  }
+
+  // Статические ресурсы — network-first, кэш как fallback на офлайн
   event.respondWith(
-    caches.match(event.request)
+    fetch(event.request)
       .then(response => {
-        // Если в кэше есть - возвращаем оттуда
-        if (response) {
-          return response;
+        if (response && response.status === 200 && response.type === 'basic') {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
         }
-
-        return fetch(event.request).then(response => {
-          // Если это не валидный ответ - возвращаем как есть
-          if (!response || response.status !== 200 || response.type !== 'basic') {
-            return response;
-          }
-
-          // Кэшируем успешные запросы
-          const responseToCache = response.clone();
-          caches.open(CACHE_NAME)
-            .then(cache => {
-              cache.put(event.request, responseToCache);
-            });
-
-          return response;
-        });
+        return response;
       })
       .catch(() => {
-        // Если нет интернета и нет в кэше, показываем offline страницу
-        return caches.match('/index.html');
+        return caches.match(event.request).then(cached => cached || caches.match('/index.html'));
       })
   );
 });
