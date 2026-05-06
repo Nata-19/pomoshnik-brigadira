@@ -41,19 +41,28 @@ class DataParser {
     return name.split(/\s+/).map(w => w ? w[0].toUpperCase() + w.slice(1) : w).join(' ');
   }
 
-  normalizeInput(line) {
+  normalizeInput(line, ctx) {
     // Если строка уже в строгом формате — возвращаем как есть
     if (line.includes(':') && line.includes('-')) {
       return line;
     }
 
     // Натуральный язык: "квартал 9 клетка 1 иванов с первого по второй ряд"
-    const headerMatch = line.match(/квартал\s+(\S+)\s+клетка\s+(\S+)\s+(.+)/i);
-    if (!headerMatch) return line;
-
-    const quarter = this.resolveNumber(headerMatch[1]) || headerMatch[1];
-    const cell = this.resolveNumber(headerMatch[2]) || headerMatch[2];
-    let rest = headerMatch[3].trim();
+    let headerMatch = line.match(/квартал\s+(\S+)\s+клетка\s+(\S+)\s+(.+)/i);
+    let quarter, cell, rest;
+    if (headerMatch) {
+      quarter = this.resolveNumber(headerMatch[1]) || headerMatch[1];
+      cell = this.resolveNumber(headerMatch[2]) || headerMatch[2];
+      rest = headerMatch[3].trim();
+    } else if (ctx && ctx.lastQuarter && ctx.lastCell) {
+      // Продолжение: квартал/клетка наследуются из предыдущей строки.
+      // Например: "Лена с 5 по 10" после строки с указанным кварталом.
+      quarter = ctx.lastQuarter;
+      cell = ctx.lastCell;
+      rest = line.trim();
+    } else {
+      return line;
+    }
 
     // Заменяем русские числа на цифры (токенизация по пробелам/запятым,
     // так как \b в JS regex не работает для кириллицы без флага /u)
@@ -102,16 +111,17 @@ class DataParser {
 
     // Разбиваем по блокам (квартал, клетка)
     const lines = input.split('\n').filter(l => l.trim());
+    const ctx = { lastQuarter: null, lastCell: null };
 
     for (let rawLine of lines) {
-      const line = this.normalizeInput(rawLine);
+      const line = this.normalizeInput(rawLine, ctx);
       if (!line.includes(':')) {
         errors.push(`"Не удалось распознать строку": ${rawLine}`);
         continue;
       }
 
       const [header, employeesPart] = line.split(':');
-      
+
       // Парсим заголовок: "Квартал N, Клетка N"
       const headerMatch = header.match(/[Кк]вартал\s+(\d+)\s*,\s*[Кк]летка\s+(\d+)/);
       if (!headerMatch) {
@@ -121,6 +131,9 @@ class DataParser {
 
       const quarter = headerMatch[1];
       const cell = headerMatch[2]; // оставляем как строку для поиска в инвентаризации
+      // Запоминаем для следующих строк-«продолжений»
+      ctx.lastQuarter = quarter;
+      ctx.lastCell = cell;
 
       // Парсим сотрудников: "Фамилия - диапазоны и перечисления"
       const employees = employeesPart.split(';').map(e => e.trim()).filter(e => e);

@@ -40,8 +40,8 @@ class BrigadeAssistant {
           </div>
 
           <div class="form-group">
-            <label>Ввод данных (Квартал N, Клетка N: Фамилия - с X по Y, A; ...):</label>
-            <textarea id="input" placeholder="Квартал 1, Клетка 1: Иванов - с 1 по 3, 5; Петров - с 6 по 8&#10;Квартал 2, Клетка 2: Сидоров - с 1 по 2"></textarea>
+            <label>Ввод данных (голосом или вручную):</label>
+            <textarea id="input" placeholder="Примеры:&#10;квартал 1 клетка 1 иванов с 1 по 5&#10;Лена с 6 по 10            (квартал/клетка наследуются)&#10;Петров 11, 12, 13&#10;&#10;Или строгий формат:&#10;Квартал 1, Клетка 1: Иванов - с 1 по 3; Петров - 6, 8"></textarea>
             <div class="voice-row">
               <button type="button" id="voice-btn" onclick="app.toggleVoice()" class="voice-btn">🎤 Голос</button>
               <span id="voice-status"></span>
@@ -146,19 +146,32 @@ class BrigadeAssistant {
     this.recognition = new SpeechRecognition();
     this.recognition.lang = 'ru-RU';
     this.recognition.continuous = true;
-    this.recognition.interimResults = false;
+    this.recognition.interimResults = true;
     this.shouldKeepRecording = false;
 
     this.recognition.onresult = (e) => {
-      let transcript = '';
+      let finalChunk = '';
+      let interimChunk = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
+        const text = e.results[i][0].transcript;
         if (e.results[i].isFinal) {
-          transcript += e.results[i][0].transcript;
+          finalChunk += text;
+        } else {
+          interimChunk += text;
         }
       }
-      if (!transcript.trim()) return;
-      const textarea = document.getElementById('input');
-      textarea.value += (textarea.value ? '\n' : '') + transcript.trim();
+      if (finalChunk.trim()) {
+        const textarea = document.getElementById('input');
+        textarea.value += (textarea.value ? '\n' : '') + finalChunk.trim();
+      }
+      // Показываем «живой» текст в строке статуса, чтобы пользователь видел,
+      // что распознаётся прямо сейчас
+      const statusEl = document.getElementById('voice-status');
+      if (statusEl && this.isRecording) {
+        statusEl.textContent = interimChunk.trim()
+          ? '🔴 ' + interimChunk.trim()
+          : '🔴 Запись...';
+      }
     };
 
     this.recognition.onend = () => {
