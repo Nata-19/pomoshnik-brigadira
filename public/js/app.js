@@ -189,7 +189,7 @@ class BrigadeAssistant {
     this.recognition.lang = 'ru-RU';
     this.recognition.continuous = true;
     this.recognition.interimResults = true;
-    this.shouldKeepRecording = false;
+    this.sessionHasFinal = false;
 
     this.recognition.onresult = (e) => {
       let finalChunk = '';
@@ -204,10 +204,15 @@ class BrigadeAssistant {
       }
       if (finalChunk.trim()) {
         const textarea = document.getElementById('input');
-        textarea.value += (textarea.value ? '\n' : '') + finalChunk.trim();
+        // В рамках ОДНОЙ сессии записи добавляем фрагменты через пробел
+        // (новая строка — только начало сессии)
+        if (this.sessionHasFinal) {
+          textarea.value += ' ' + finalChunk.trim();
+        } else {
+          textarea.value += (textarea.value ? '\n' : '') + finalChunk.trim();
+          this.sessionHasFinal = true;
+        }
       }
-      // Показываем «живой» текст в строке статуса, чтобы пользователь видел,
-      // что распознаётся прямо сейчас
       const statusEl = document.getElementById('voice-status');
       if (statusEl && this.isRecording) {
         statusEl.textContent = interimChunk.trim()
@@ -217,41 +222,22 @@ class BrigadeAssistant {
     };
 
     this.recognition.onend = () => {
-      // Если пользователь не нажимал «Стоп» — автоматически перезапускаем,
-      // потому что браузер сам глушит сессию после паузы в речи.
-      if (this.shouldKeepRecording) {
-        setTimeout(() => {
-          if (this.shouldKeepRecording) {
-            try {
-              this.recognition.start();
-            } catch (err) {
-              // start() кидает, если сессия ещё не успела закрыться — повторим чуть позже
-              setTimeout(() => {
-                if (this.shouldKeepRecording) {
-                  try { this.recognition.start(); } catch (_) {}
-                }
-              }, 300);
-            }
-          }
-        }, 100);
-        return;
-      }
+      // Без авто-перезапуска: одна кнопка-нажатие = одна сессия записи.
+      // Это надёжнее: на Android Chrome перезапуск вызывает повторный
+      // запрос разрешения микрофона, что отвлекает.
       this.isRecording = false;
       this.updateVoiceUI();
     };
 
     this.recognition.onerror = (e) => {
-      const statusEl = document.getElementById('voice-status');
-      // 'no-speech' — нормальная пауза, продолжаем (onend перезапустит)
-      // 'aborted' — браузер просто прервал, тоже продолжаем
-      if (e.error === 'no-speech' || e.error === 'aborted') {
-        if (statusEl) statusEl.textContent = '🔴 Запись... (пауза)';
-        return;
-      }
-      // Реальные ошибки — останавливаемся
-      this.shouldKeepRecording = false;
       this.isRecording = false;
       this.updateVoiceUI();
+      const statusEl = document.getElementById('voice-status');
+      // 'no-speech' и 'aborted' — нормальные сценарии (тишина / закрытие)
+      if (e.error === 'no-speech' || e.error === 'aborted') {
+        if (statusEl) statusEl.textContent = '';
+        return;
+      }
       if (statusEl) statusEl.textContent = '❌ Ошибка: ' + e.error;
     };
   }
@@ -259,17 +245,16 @@ class BrigadeAssistant {
   toggleVoice() {
     if (!this.recognition) return;
     if (this.isRecording) {
-      this.shouldKeepRecording = false;
       this.recognition.stop();
     } else {
-      this.shouldKeepRecording = true;
+      this.sessionHasFinal = false;
       try {
         this.recognition.start();
+        this.isRecording = true;
+        this.updateVoiceUI();
       } catch (err) {
-        // Если уже запущено — игнорируем
+        // Если уже запущено или браузер не даёт — игнорируем
       }
-      this.isRecording = true;
-      this.updateVoiceUI();
     }
   }
 
