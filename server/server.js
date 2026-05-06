@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const path = require('path');
-const sqlite3 = require('sqlite3').verbose();
+const { Pool } = require('pg');
 const fs = require('fs');
 const DataParser = require('./parser');
 
@@ -16,26 +16,39 @@ app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
 // Статические файлы
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Инициализация БД (на Fly.io том монтируется в /data)
-const dbPath = process.env.DB_PATH || path.join(__dirname, '../data.db');
-const db = new sqlite3.Database(dbPath, (err) => {
-  if (err) console.error(err.message);
-  else console.log('✅ Connected to SQLite database');
+// Postgres (Neon на проде, можно локально)
+if (!process.env.DATABASE_URL) {
+  console.error('❌ DATABASE_URL не задан. Укажи строку подключения к Postgres.');
+  process.exit(1);
+}
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
 });
 
-// Инициализируем таблицу для хранения данных
-db.run(`
-  CREATE TABLE IF NOT EXISTS work_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date TEXT NOT NULL,
-    quarter TEXT NOT NULL,
-    cell INTEGER NOT NULL,
-    employee TEXT NOT NULL,
-    rows TEXT NOT NULL,
-    bushes INTEGER NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`);
+pool.on('error', (err) => console.error('PG pool error:', err));
+
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS work_logs (
+        id SERIAL PRIMARY KEY,
+        date TEXT NOT NULL,
+        quarter TEXT NOT NULL,
+        cell TEXT NOT NULL,
+        employee TEXT NOT NULL,
+        rows TEXT NOT NULL,
+        bushes INTEGER NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    console.log('✅ Connected to Postgres');
+  } catch (err) {
+    console.error('❌ Postgres init failed:', err.message);
+    process.exit(1);
+  }
+})();
 
 // Загружаем инвентаризацию
 const inventory = JSON.parse(fs.readFileSync(path.join(__dirname, '../inventory.json'), 'utf8'));
@@ -59,7 +72,7 @@ app.get('/api/inventory/:quarter', (req, res) => {
 });
 
 // Обработка ввода данных (текстовый формат)
-app.post('/api/process', (req, res) => {
+app.post('/api/process', async (req, res) => {
   try {
     const { date, input } = req.body;
 
@@ -67,21 +80,14 @@ app.post('/api/process', (req, res) => {
       return res.status(400).json({ error: 'Некорректный формат ввода' });
     }
 
-    // Парсим входные данные
     const { entries } = parser.parse(input, date);
-
-    // Формируем отчет
     const report = parser.formatReport(date, entries, inventory);
 
-    // Сохраняем в БД
     for (const entry of entries) {
-      db.run(
+      await pool.query(
         `INSERT INTO work_logs (date, quarter, cell, employee, rows, bushes)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [date, entry.quarter, entry.cell, entry.employee, entry.rows.join(','), entry.bushes],
-        (err) => {
-          if (err) console.error('DB Error:', err);
-        }
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [date, entry.quarter, entry.cell, entry.employee, entry.rows.join(','), entry.bushes]
       );
     }
 
@@ -91,6 +97,9 @@ app.post('/api/process', (req, res) => {
     res.status(400).json({ error: error.message });
   }
 });
+
+// Health-check для UptimeRobot и Render
+app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🍇 Brigade Assistant запущен на порту ${PORT}`);
