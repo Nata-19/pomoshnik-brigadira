@@ -75,9 +75,27 @@ class DataParser {
     // Ищем "с X по Y" (диапазон)
     const rangeMatch = rest.match(/с\s+(\d+)\s+по\s+(\d+)/i);
     if (rangeMatch) {
-      const beforeRange = rest.substring(0, rest.indexOf(rangeMatch[0])).trim();
-      const name = this.capitalize(beforeRange.replace(/\s+ряд$/i, '').trim());
-      return `Квартал ${quarter}, Клетка ${cell}: ${name} - с ${rangeMatch[1]} по ${rangeMatch[2]}`;
+      const matchStart = rest.indexOf(rangeMatch[0]);
+      const beforeRange = rest.substring(0, matchStart).trim();
+      const afterRange = rest.substring(matchStart + rangeMatch[0].length).trim();
+      const name = this.capitalize(beforeRange.replace(/\s+ряд[а-я]*$/i, '').trim());
+
+      let rowsSpec = `с ${rangeMatch[1]} по ${rangeMatch[2]}`;
+      if (afterRange) {
+        // Хвост вида: "и 40", ", 40, 41", "и с 35 по 38", "ряд 40 и 41" и т.д.
+        // Чистим: убираем слова "ряд/ряды/ряда" и ведущие союзы/запятые,
+        // заменяем "и" между токенами на запятую.
+        const cleaned = afterRange
+          .replace(/\bряд[а-я]*\b/gi, ' ')
+          .replace(/^[\s,и]+/i, '')
+          .replace(/\s+и\s+/gi, ', ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (cleaned) {
+          rowsSpec += ', ' + cleaned;
+        }
+      }
+      return `Квартал ${quarter}, Клетка ${cell}: ${name} - ${rowsSpec}`;
     }
 
     // Без диапазона: "иванов 1 2 3 ряд" или "иванов первый второй ряд"
