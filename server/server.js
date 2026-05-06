@@ -50,8 +50,9 @@ pool.on('error', (err) => console.error('PG pool error:', err));
   }
 })();
 
-// Загружаем инвентаризацию
-const inventory = JSON.parse(fs.readFileSync(path.join(__dirname, '../inventory.json'), 'utf8'));
+// Загружаем инвентаризацию (на Render — из Secret Files, локально — из корня проекта)
+const inventoryPath = process.env.INVENTORY_PATH || path.join(__dirname, '../inventory.json');
+const inventory = JSON.parse(fs.readFileSync(inventoryPath, 'utf8'));
 const parser = new DataParser(inventory);
 
 // API endpoints
