@@ -6,6 +6,24 @@ const { Pool } = require('pg');
 const fs = require('fs');
 const DataParser = require('./parser');
 
+// Whisper подгружается лениво — модель ~75 МБ, грузится на первом запросе
+let transcriberPromise = null;
+function getTranscriber() {
+  if (!transcriberPromise) {
+    transcriberPromise = (async () => {
+      console.log('🎙 Загрузка Whisper-tiny (~75 МБ)...');
+      const { pipeline } = await import('@huggingface/transformers');
+      const t = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny');
+      console.log('✅ Whisper загружен');
+      return t;
+    })().catch((err) => {
+      transcriberPromise = null; // позволим повторить попытку при следующем запросе
+      throw err;
+    });
+  }
+  return transcriberPromise;
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -101,6 +119,36 @@ app.post('/api/process', async (req, res) => {
 
 // Health-check для UptimeRobot и Render
 app.get('/health', (req, res) => res.json({ ok: true }));
+
+// Распознавание речи: принимает Float32Array с 16-кГц моно-аудио,
+// отдаёт текст. Браузер сам конвертирует WebM → PCM перед отправкой.
+app.post('/api/transcribe',
+  express.raw({ type: 'application/octet-stream', limit: '20mb' }),
+  async (req, res) => {
+    try {
+      if (!req.body || req.body.length === 0) {
+        return res.status(400).json({ error: 'Пустой запрос' });
+      }
+      // Реконструируем Float32Array из сырого буфера
+      const samples = new Float32Array(
+        req.body.buffer,
+        req.body.byteOffset,
+        Math.floor(req.body.length / 4)
+      );
+
+      const t = await getTranscriber();
+      const result = await t(samples, {
+        language: 'russian',
+        task: 'transcribe',
+      });
+      const text = (result && result.text) ? result.text.trim() : '';
+      res.json({ text });
+    } catch (error) {
+      console.error('Transcribe error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  }
+);
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🍇 Brigade Assistant запущен на порту ${PORT}`);

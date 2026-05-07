@@ -178,83 +178,118 @@ class BrigadeAssistant {
   }
 
   initVoiceInput() {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
+    // Для записи используем MediaRecorder (доступен везде, кроме совсем старых браузеров)
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
       const btn = document.getElementById('voice-btn');
       if (btn) btn.style.display = 'none';
       return;
     }
-
-    this.recognition = new SpeechRecognition();
-    this.recognition.lang = 'ru-RU';
-    this.recognition.continuous = true;
-    this.recognition.interimResults = true;
-    this.sessionHasFinal = false;
-
-    this.recognition.onresult = (e) => {
-      let finalChunk = '';
-      let interimChunk = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const text = e.results[i][0].transcript;
-        if (e.results[i].isFinal) {
-          finalChunk += text;
-        } else {
-          interimChunk += text;
-        }
-      }
-      if (finalChunk.trim()) {
-        const textarea = document.getElementById('input');
-        // В рамках ОДНОЙ сессии записи добавляем фрагменты через пробел
-        // (новая строка — только начало сессии)
-        if (this.sessionHasFinal) {
-          textarea.value += ' ' + finalChunk.trim();
-        } else {
-          textarea.value += (textarea.value ? '\n' : '') + finalChunk.trim();
-          this.sessionHasFinal = true;
-        }
-      }
-      const statusEl = document.getElementById('voice-status');
-      if (statusEl && this.isRecording) {
-        statusEl.textContent = interimChunk.trim()
-          ? '🔴 ' + interimChunk.trim()
-          : '🔴 Запись...';
-      }
-    };
-
-    this.recognition.onend = () => {
-      // Без авто-перезапуска: одна кнопка-нажатие = одна сессия записи.
-      // Это надёжнее: на Android Chrome перезапуск вызывает повторный
-      // запрос разрешения микрофона, что отвлекает.
-      this.isRecording = false;
-      this.updateVoiceUI();
-    };
-
-    this.recognition.onerror = (e) => {
-      this.isRecording = false;
-      this.updateVoiceUI();
-      const statusEl = document.getElementById('voice-status');
-      // 'no-speech' и 'aborted' — нормальные сценарии (тишина / закрытие)
-      if (e.error === 'no-speech' || e.error === 'aborted') {
-        if (statusEl) statusEl.textContent = '';
-        return;
-      }
-      if (statusEl) statusEl.textContent = '❌ Ошибка: ' + e.error;
-    };
   }
 
-  toggleVoice() {
-    if (!this.recognition) return;
+  async toggleVoice() {
     if (this.isRecording) {
-      this.recognition.stop();
+      this.stopRecording();
     } else {
-      this.sessionHasFinal = false;
-      try {
-        this.recognition.start();
-        this.isRecording = true;
-        this.updateVoiceUI();
-      } catch (err) {
-        // Если уже запущено или браузер не даёт — игнорируем
+      await this.startRecording();
+    }
+  }
+
+  async startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.audioStream = stream;
+      this.audioChunks = [];
+
+      // Подбираем поддерживаемый формат — Android и iOS могут различаться
+      const mimes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
+      let mime = '';
+      for (const m of mimes) {
+        if (window.MediaRecorder.isTypeSupported && window.MediaRecorder.isTypeSupported(m)) {
+          mime = m;
+          break;
+        }
       }
+      this.mediaRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+
+      this.mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) this.audioChunks.push(e.data);
+      };
+
+      this.mediaRecorder.onstop = async () => {
+        // Закрываем поток микрофона
+        try { stream.getTracks().forEach(t => t.stop()); } catch {}
+
+        const blob = new Blob(this.audioChunks, { type: this.mediaRecorder.mimeType || 'audio/webm' });
+        if (blob.size === 0) {
+          this.setVoiceStatus('');
+          return;
+        }
+        await this.transcribeBlob(blob);
+      };
+
+      this.mediaRecorder.start();
+      this.isRecording = true;
+      this.updateVoiceUI();
+      this.setVoiceStatus('🔴 Запись... жми «⏹ Стоп», когда закончишь');
+    } catch (err) {
+      this.setVoiceStatus('❌ Микрофон: ' + err.message);
+    }
+  }
+
+  stopRecording() {
+    if (!this.mediaRecorder) return;
+    try { this.mediaRecorder.stop(); } catch {}
+    this.isRecording = false;
+    this.updateVoiceUI();
+    this.setVoiceStatus('⏳ Распознаю...');
+  }
+
+  setVoiceStatus(text) {
+    const el = document.getElementById('voice-status');
+    if (el) el.textContent = text;
+  }
+
+  async transcribeBlob(blob) {
+    try {
+      // Декодируем WebM/Opus → PCM, ресемплируем в 16 кГц моно для Whisper
+      const arrayBuffer = await blob.arrayBuffer();
+      const AC = window.AudioContext || window.webkitAudioContext;
+      const audioCtx = new AC();
+      const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+      try { audioCtx.close(); } catch {}
+
+      const targetRate = 16000;
+      const offlineCtx = new OfflineAudioContext(1, Math.ceil(decoded.duration * targetRate), targetRate);
+      const source = offlineCtx.createBufferSource();
+      source.buffer = decoded;
+      source.connect(offlineCtx.destination);
+      source.start(0);
+      const resampled = await offlineCtx.startRendering();
+      const samples = resampled.getChannelData(0); // Float32Array @ 16kHz mono
+
+      // Отправляем сырые байты Float32 на сервер
+      const response = await fetch('/api/transcribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: samples.buffer,
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        this.setVoiceStatus('❌ ' + (data.error || ('HTTP ' + response.status)));
+        return;
+      }
+      const data = await response.json();
+      const text = (data.text || '').trim();
+      if (!text) {
+        this.setVoiceStatus('⚠ Ничего не распознано — попробуй ещё раз');
+        return;
+      }
+      const textarea = document.getElementById('input');
+      textarea.value += (textarea.value ? '\n' : '') + text;
+      this.setVoiceStatus('');
+    } catch (err) {
+      this.setVoiceStatus('❌ ' + err.message);
     }
   }
 
