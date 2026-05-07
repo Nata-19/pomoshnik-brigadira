@@ -6,24 +6,6 @@ const { Pool } = require('pg');
 const fs = require('fs');
 const DataParser = require('./parser');
 
-// Whisper подгружается лениво — модель ~75 МБ, грузится на первом запросе
-let transcriberPromise = null;
-function getTranscriber() {
-  if (!transcriberPromise) {
-    transcriberPromise = (async () => {
-      console.log('🎙 Загрузка Whisper-tiny (~75 МБ)...');
-      const { pipeline } = await import('@huggingface/transformers');
-      const t = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny');
-      console.log('✅ Whisper загружен');
-      return t;
-    })().catch((err) => {
-      transcriberPromise = null; // позволим повторить попытку при следующем запросе
-      throw err;
-    });
-  }
-  return transcriberPromise;
-}
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -120,28 +102,43 @@ app.post('/api/process', async (req, res) => {
 // Health-check для UptimeRobot и Render
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// Распознавание речи: принимает Float32Array с 16-кГц моно-аудио,
-// отдаёт текст. Браузер сам конвертирует WebM → PCM перед отправкой.
+// Распознавание речи через Hugging Face Inference API (free tier).
+// Браузер шлёт сырой аудио-blob (WebM/Opus), мы прокидываем в HF.
+const HF_MODEL = 'openai/whisper-small';
 app.post('/api/transcribe',
-  express.raw({ type: 'application/octet-stream', limit: '20mb' }),
+  express.raw({ type: ['audio/*', 'application/octet-stream'], limit: '20mb' }),
   async (req, res) => {
     try {
+      if (!process.env.HF_TOKEN) {
+        return res.status(500).json({
+          error: 'HF_TOKEN не задан. Добавь его в переменные окружения Render.'
+        });
+      }
       if (!req.body || req.body.length === 0) {
         return res.status(400).json({ error: 'Пустой запрос' });
       }
-      // Реконструируем Float32Array из сырого буфера
-      const samples = new Float32Array(
-        req.body.buffer,
-        req.body.byteOffset,
-        Math.floor(req.body.length / 4)
-      );
 
-      const t = await getTranscriber();
-      const result = await t(samples, {
-        language: 'russian',
-        task: 'transcribe',
+      const contentType = req.get('content-type') || 'audio/webm';
+      const r = await fetch(`https://api-inference.huggingface.co/models/${HF_MODEL}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + process.env.HF_TOKEN,
+          'Content-Type': contentType,
+          'X-Wait-For-Model': 'true', // подождём, если модель «холодная»
+        },
+        body: req.body,
       });
-      const text = (result && result.text) ? result.text.trim() : '';
+
+      if (!r.ok) {
+        const errText = await r.text();
+        console.error('HF API error:', r.status, errText);
+        return res.status(502).json({
+          error: 'Hugging Face: ' + r.status + ' ' + errText.slice(0, 200)
+        });
+      }
+
+      const data = await r.json();
+      const text = (data.text || '').trim();
       res.json({ text });
     } catch (error) {
       console.error('Transcribe error:', error);

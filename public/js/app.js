@@ -251,27 +251,11 @@ class BrigadeAssistant {
 
   async transcribeBlob(blob) {
     try {
-      // Декодируем WebM/Opus → PCM, ресемплируем в 16 кГц моно для Whisper
-      const arrayBuffer = await blob.arrayBuffer();
-      const AC = window.AudioContext || window.webkitAudioContext;
-      const audioCtx = new AC();
-      const decoded = await audioCtx.decodeAudioData(arrayBuffer);
-      try { audioCtx.close(); } catch {}
-
-      const targetRate = 16000;
-      const offlineCtx = new OfflineAudioContext(1, Math.ceil(decoded.duration * targetRate), targetRate);
-      const source = offlineCtx.createBufferSource();
-      source.buffer = decoded;
-      source.connect(offlineCtx.destination);
-      source.start(0);
-      const resampled = await offlineCtx.startRendering();
-      const samples = resampled.getChannelData(0); // Float32Array @ 16kHz mono
-
-      // Отправляем сырые байты Float32 на сервер
+      // Просто шлём аудио-blob на сервер; сервер передаст его в Hugging Face API.
       const response = await fetch('/api/transcribe', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: samples.buffer,
+        headers: { 'Content-Type': blob.type || 'audio/webm' },
+        body: blob,
       });
 
       if (!response.ok) {
