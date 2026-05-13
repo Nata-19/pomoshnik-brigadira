@@ -102,6 +102,78 @@ app.post('/api/process', async (req, res) => {
 // Health-check для UptimeRobot и Render
 app.get('/health', (req, res) => res.json({ ok: true }));
 
+// Отчёт за период: группировка по сотруднику → квартал/клетка
+app.get('/api/report', async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) {
+      return res.status(400).json({ error: 'Укажи даты from и to (YYYY-MM-DD)' });
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+      return res.status(400).json({ error: 'Даты в формате YYYY-MM-DD' });
+    }
+    if (from > to) {
+      return res.status(400).json({ error: 'Дата "От" позже даты "До"' });
+    }
+
+    const result = await pool.query(
+      `SELECT date, quarter, cell, employee, rows, bushes
+       FROM work_logs
+       WHERE date >= $1 AND date <= $2
+       ORDER BY employee, quarter::int, cell::int, date`,
+      [from, to]
+    );
+
+    if (result.rows.length === 0) {
+      return res.json({
+        report: `Отчёт за период: ${from} — ${to}\n\nЗа указанный период данных нет.`
+      });
+    }
+
+    // Группируем: сотрудник → "кв-клетка" → {rows: число, bushes: число}
+    const byEmployee = {};
+    for (const r of result.rows) {
+      if (!byEmployee[r.employee]) byEmployee[r.employee] = {};
+      const key = `${r.quarter}|${r.cell}`;
+      if (!byEmployee[r.employee][key]) {
+        byEmployee[r.employee][key] = { quarter: r.quarter, cell: r.cell, rows: 0, bushes: 0 };
+      }
+      // rows хранятся как "1,2,3" — считаем количество элементов
+      const rowCount = String(r.rows).split(',').filter(x => x.trim()).length;
+      byEmployee[r.employee][key].rows += rowCount;
+      byEmployee[r.employee][key].bushes += r.bushes;
+    }
+
+    // Формируем текст
+    let report = `Отчёт за период: ${from} — ${to}\n\n`;
+    let totalRows = 0;
+    let totalBushes = 0;
+    const employees = Object.keys(byEmployee).sort((a, b) => a.localeCompare(b, 'ru'));
+
+    for (const name of employees) {
+      report += `${name}\n`;
+      let empRows = 0;
+      let empBushes = 0;
+      const cells = Object.values(byEmployee[name])
+        .sort((a, b) => (+a.quarter - +b.quarter) || (+a.cell - +b.cell));
+      for (const c of cells) {
+        report += `  Кв.${c.quarter}, кл.${c.cell} — ${c.rows} рядов, ${c.bushes} кустов\n`;
+        empRows += c.rows;
+        empBushes += c.bushes;
+      }
+      report += `  Итого: ${empRows} рядов, ${empBushes} кустов\n\n`;
+      totalRows += empRows;
+      totalBushes += empBushes;
+    }
+
+    report += `ВСЕГО ЗА ПЕРИОД:\nРяды: ${totalRows}\nКусты: ${totalBushes}`;
+    res.json({ report });
+  } catch (error) {
+    console.error('Report error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Распознавание речи через Hugging Face Inference API (free tier).
 // Браузер шлёт сырой аудио-blob (WebM/Opus), мы прокидываем в HF.
 const HF_MODEL = 'openai/whisper-small';

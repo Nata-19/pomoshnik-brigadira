@@ -170,11 +170,27 @@ class BrigadeAssistant {
     const resultDiv = document.getElementById('report-result');
 
     if (!from || !to) {
-      this.showResult('❌ Укажите даты', true, resultDiv);
+      this.showResult('❌ Укажите обе даты', true, resultDiv);
+      return;
+    }
+    if (from > to) {
+      this.showResult('❌ Дата «От» позже даты «До»', true, resultDiv);
       return;
     }
 
-    this.showResult('📋 Функция отчета в разработке', false, resultDiv);
+    this.showResult('⏳ Загрузка отчёта...', false, resultDiv);
+
+    try {
+      const response = await fetch(`/api/report?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+      const data = await response.json();
+      if (response.ok) {
+        this.showResult(data.report, false, resultDiv);
+      } else {
+        this.showResult('❌ ' + (data.error || 'Не удалось получить отчёт'), true, resultDiv);
+      }
+    } catch (error) {
+      this.showResult('❌ ' + error.message, true, resultDiv);
+    }
   }
 
   initVoiceInput() {
