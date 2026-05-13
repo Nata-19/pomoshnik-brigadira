@@ -102,6 +102,59 @@ app.post('/api/process', async (req, res) => {
 // Health-check для UptimeRobot и Render
 app.get('/health', (req, res) => res.json({ ok: true }));
 
+// Список записей за день (для журнала + удаления)
+app.get('/api/logs', async (req, res) => {
+  try {
+    const { date, from, to } = req.query;
+    let result;
+    if (date) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
+      }
+      result = await pool.query(
+        `SELECT id, date, quarter, cell, employee, rows, bushes, created_at
+         FROM work_logs WHERE date = $1
+         ORDER BY created_at DESC`,
+        [date]
+      );
+    } else if (from && to) {
+      result = await pool.query(
+        `SELECT id, date, quarter, cell, employee, rows, bushes, created_at
+         FROM work_logs WHERE date >= $1 AND date <= $2
+         ORDER BY date DESC, created_at DESC`,
+        [from, to]
+      );
+    } else {
+      return res.status(400).json({ error: 'Укажи date или from+to' });
+    }
+    res.json({ logs: result.rows });
+  } catch (error) {
+    console.error('Logs list error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Удаление записи
+app.delete('/api/logs/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'Некорректный id' });
+    }
+    const result = await pool.query(
+      'DELETE FROM work_logs WHERE id = $1 RETURNING *',
+      [id]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Запись не найдена' });
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Отчёт за период: группировка по сотруднику → квартал/клетка
 app.get('/api/report', async (req, res) => {
   try {

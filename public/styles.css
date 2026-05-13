@@ -155,6 +155,55 @@ button:active {
     gap: 10px;
 }
 
+.logs-list {
+    margin-top: 15px;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid #ecf0f1;
+}
+
+.log-entry {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid #ecf0f1;
+    background: #fafbfc;
+}
+
+.log-entry:last-child {
+    border-bottom: none;
+}
+
+.log-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.log-employee {
+    font-weight: 600;
+    color: #2c3e50;
+    margin-bottom: 2px;
+}
+
+.log-meta {
+    font-size: 13px;
+    color: #555;
+}
+
+.delete-btn {
+    width: auto;
+    margin: 0;
+    padding: 6px 12px;
+    font-size: 12px;
+    background: #e74c3c;
+}
+
+.delete-btn:hover {
+    background: #c0392b;
+}
+
 .voice-row {
     display: flex;
     align-items: center;

@@ -58,6 +58,7 @@ class BrigadeAssistant {
         <div class="tabs">
           <button class="tab-button active" onclick="app.switchTab(event, 'input')">Ввод данных</button>
           <button class="tab-button" onclick="app.switchTab(event, 'report')">Отчет за период</button>
+          <button class="tab-button" onclick="app.switchTab(event, 'logs'); app.loadLogs()">Журнал</button>
         </div>
 
         <div class="tab-content active" id="input-tab">
@@ -107,6 +108,17 @@ class BrigadeAssistant {
           <button onclick="app.getReport()">Получить отчет</button>
 
           <div id="report-result" class="result" style="display:none;"></div>
+        </div>
+
+        <div class="tab-content" id="logs-tab">
+          <div class="form-group">
+            <label>Дата:</label>
+            <input type="date" id="logs-date" value="${this.getTodayDate()}" onchange="app.loadLogs()">
+          </div>
+
+          <button onclick="app.loadLogs()">Обновить</button>
+
+          <div id="logs-list" class="logs-list"></div>
         </div>
       </div>
     `;
@@ -162,6 +174,64 @@ class BrigadeAssistant {
     element.classList.remove('error', 'success');
     element.classList.add(isError ? 'error' : 'success');
     element.style.display = 'block';
+  }
+
+  async loadLogs() {
+    const date = document.getElementById('logs-date').value;
+    const list = document.getElementById('logs-list');
+    if (!date) {
+      list.innerHTML = '<p style="color:#888;padding:10px;">Выбери дату</p>';
+      return;
+    }
+    list.innerHTML = '<p style="padding:10px;">⏳ Загрузка...</p>';
+    try {
+      const r = await fetch('/api/logs?date=' + encodeURIComponent(date));
+      const data = await r.json();
+      if (!r.ok) {
+        list.innerHTML = '<p style="color:#c0392b;padding:10px;">❌ ' + (data.error || 'Ошибка') + '</p>';
+        return;
+      }
+      if (!data.logs || data.logs.length === 0) {
+        list.innerHTML = '<p style="color:#888;padding:10px;">За эту дату записей нет.</p>';
+        return;
+      }
+      // Сортируем по кварталу/клетке/сотруднику для удобства
+      const sorted = data.logs.slice().sort((a, b) =>
+        (+a.quarter - +b.quarter) || (+a.cell - +b.cell) || a.employee.localeCompare(b.employee, 'ru')
+      );
+      list.innerHTML = sorted.map(log => `
+        <div class="log-entry">
+          <div class="log-info">
+            <div class="log-employee">${this.escapeHtml(log.employee)}</div>
+            <div class="log-meta">Кв.${log.quarter}, кл.${log.cell} · ряды [${this.escapeHtml(log.rows)}] · ${log.bushes} кустов</div>
+          </div>
+          <button class="delete-btn" onclick="app.deleteLog(${log.id})">Удалить</button>
+        </div>
+      `).join('');
+    } catch (e) {
+      list.innerHTML = '<p style="color:#c0392b;padding:10px;">❌ ' + e.message + '</p>';
+    }
+  }
+
+  async deleteLog(id) {
+    if (!confirm('Удалить эту запись? Действие нельзя отменить.')) return;
+    try {
+      const r = await fetch('/api/logs/' + id, { method: 'DELETE' });
+      if (r.ok) {
+        this.loadLogs();
+      } else {
+        const data = await r.json().catch(() => ({}));
+        alert('Ошибка удаления: ' + (data.error || 'не удалось'));
+      }
+    } catch (e) {
+      alert('Ошибка: ' + e.message);
+    }
+  }
+
+  escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[c]);
   }
 
   async getReport() {
