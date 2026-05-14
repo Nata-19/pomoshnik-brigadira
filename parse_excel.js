@@ -6,8 +6,13 @@
 //
 // Пример parse_config.json:
 //   {
+//     "estates": [
+//       { "id": "estate1", "name": "Хозяйство A" },
+//       { "id": "estate2", "name": "Хозяйство B" }
+//     ],
 //     "quarters": [
 //       {
+//         "estate": "estate1",
 //         "file": "имя.xlsx",
 //         "sheet": "имя листа",
 //         "quarter": "1",
@@ -35,6 +40,12 @@ if (!config.quarters || !Array.isArray(config.quarters)) {
   console.error('❌ В parse_config.json должно быть поле "quarters" — массив.');
   process.exit(1);
 }
+if (!config.estates || !Array.isArray(config.estates) || config.estates.length === 0) {
+  console.error('❌ В parse_config.json должно быть поле "estates" — непустой массив объектов { id, name }.');
+  process.exit(1);
+}
+
+const estatesByID = Object.fromEntries(config.estates.map(e => [e.id, e]));
 
 function extractCells(sheet, opts) {
   const data = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, blankrows: false });
@@ -67,11 +78,16 @@ function loadWB(file) {
   return wbCache[file];
 }
 
-const inventory = { quarters: {} };
+const inventory = { estates: {} };
 
 for (const q of config.quarters) {
+  const estateId = q.estate;
+  if (!estateId || !estatesByID[estateId]) {
+    console.warn(`⚠ Квартал ${q.quarter}: estate "${estateId}" не описан в estates — пропускаю`);
+    continue;
+  }
   if (!fs.existsSync(q.file)) {
-    console.warn(`⚠ Файл "${q.file}" не найден — пропускаю квартал ${q.quarter}`);
+    console.warn(`⚠ Файл "${q.file}" не найден — пропускаю квартал ${q.quarter} (${estateId})`);
     continue;
   }
   const wb = loadWB(q.file);
@@ -81,23 +97,32 @@ for (const q of config.quarters) {
     continue;
   }
   const cells = extractCells(sheet, q);
-  inventory.quarters[q.quarter] = { name: q.name, cells };
+  if (!inventory.estates[estateId]) {
+    inventory.estates[estateId] = { name: estatesByID[estateId].name, quarters: {} };
+  }
+  inventory.estates[estateId].quarters[q.quarter] = { name: q.name, cells };
 }
 
 console.log('=== Итоги парсинга ===');
-let totalBushes = 0;
-for (const [qid, q] of Object.entries(inventory.quarters)) {
-  let qBushes = 0;
-  let qRows = 0;
-  for (const rows of Object.values(q.cells)) {
-    for (const r of rows) qBushes += r.bushes;
-    qRows += rows.length;
+let grandTotal = 0;
+for (const [eid, estate] of Object.entries(inventory.estates)) {
+  console.log(`\n— ${estate.name} (${eid}) —`);
+  let estateBushes = 0;
+  for (const [qid, q] of Object.entries(estate.quarters)) {
+    let qBushes = 0;
+    let qRows = 0;
+    for (const rows of Object.values(q.cells)) {
+      for (const r of rows) qBushes += r.bushes;
+      qRows += rows.length;
+    }
+    estateBushes += qBushes;
+    const cellList = Object.keys(q.cells).sort((a, b) => +a - +b).join(', ');
+    console.log(`  Кв.${qid}: клеток=${Object.keys(q.cells).length} [${cellList}], строк-ряды=${qRows}, кустов=${qBushes}`);
   }
-  totalBushes += qBushes;
-  const cellList = Object.keys(q.cells).sort((a, b) => +a - +b).join(', ');
-  console.log(`Кв.${qid}: клеток=${Object.keys(q.cells).length} [${cellList}], строк-ряды=${qRows}, кустов=${qBushes}`);
+  console.log(`  Итого по хозяйству: ${estateBushes}`);
+  grandTotal += estateBushes;
 }
-console.log(`\nВСЕГО кустов: ${totalBushes}`);
+console.log(`\nВСЕГО кустов: ${grandTotal}`);
 
 fs.writeFileSync('inventory.json', JSON.stringify(inventory), 'utf8');
 const sizeKb = (fs.statSync('inventory.json').size / 1024).toFixed(0);

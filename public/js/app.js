@@ -1,7 +1,9 @@
 class BrigadeAssistant {
   constructor() {
+    this.estates = [];
+    this.estate = localStorage.getItem('selectedEstate') || '';
     this.quarters = [];
-    this.cellsByQuarter = {}; // кэш клеток по кварталу
+    this.cellsByQuarter = {}; // кэш клеток по (estate|quarter)
     this.init();
   }
 
@@ -9,29 +11,79 @@ class BrigadeAssistant {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(e => console.log('SW error:', e));
     }
-    await this.loadQuarters();
+    await this.loadEstates();
+    // Если сохранённое хозяйство более не существует — сбрасываем
+    if (this.estate && !this.estates.find(e => e.id === this.estate)) {
+      this.estate = '';
+      localStorage.removeItem('selectedEstate');
+    }
+    if (this.estate) {
+      await this.loadQuarters();
+    }
     this.render();
   }
 
-  async loadQuarters() {
+  async loadEstates() {
     try {
-      const response = await fetch('/api/quarters');
-      this.quarters = await response.json();
+      const r = await fetch('/api/estates');
+      this.estates = await r.json();
+    } catch (error) {
+      console.error('Failed to load estates:', error);
+      this.estates = [];
+    }
+  }
+
+  async loadQuarters() {
+    if (!this.estate) {
+      this.quarters = [];
+      return;
+    }
+    try {
+      const r = await fetch('/api/quarters?estate=' + encodeURIComponent(this.estate));
+      this.quarters = await r.json();
     } catch (error) {
       console.error('Failed to load quarters:', error);
+      this.quarters = [];
     }
   }
 
   async loadCells(quarterId) {
-    if (this.cellsByQuarter[quarterId]) return this.cellsByQuarter[quarterId];
+    const key = this.estate + '|' + quarterId;
+    if (this.cellsByQuarter[key]) return this.cellsByQuarter[key];
     try {
-      const r = await fetch('/api/inventory/' + encodeURIComponent(quarterId));
+      const r = await fetch('/api/inventory/' + encodeURIComponent(this.estate) + '/' + encodeURIComponent(quarterId));
       const data = await r.json();
       const cells = Object.keys(data.cells || {}).sort((a, b) => +a - +b);
-      this.cellsByQuarter[quarterId] = cells;
+      this.cellsByQuarter[key] = cells;
       return cells;
     } catch (e) {
       return [];
+    }
+  }
+
+  async onEstateChange() {
+    const eSel = document.getElementById('estate-sel');
+    this.estate = eSel.value;
+    if (this.estate) {
+      localStorage.setItem('selectedEstate', this.estate);
+    } else {
+      localStorage.removeItem('selectedEstate');
+    }
+    this.cellsByQuarter = {};
+    await this.loadQuarters();
+    // Перерисовываем выпадающие списки кварталов/клеток
+    const qSel = document.getElementById('quarter-sel');
+    if (qSel) {
+      qSel.innerHTML = '<option value="">Квартал...</option>' +
+        this.quarters.map(q => `<option value="${q.id}">${this.escapeHtml(q.name)}</option>`).join('');
+    }
+    const cSel = document.getElementById('cell-sel');
+    if (cSel) cSel.innerHTML = '<option value="">Клетка...</option>';
+    // Подсвечиваем текущее хозяйство в бейдже
+    const badge = document.getElementById('estate-badge');
+    if (badge) {
+      const est = this.estates.find(e => e.id === this.estate);
+      badge.textContent = est ? est.name : '';
     }
   }
 
@@ -51,10 +103,20 @@ class BrigadeAssistant {
 
   render() {
     const root = document.getElementById('root');
+    const currentEstate = this.estates.find(e => e.id === this.estate);
     root.innerHTML = `
       <div class="container">
         <h1>🍇 Помощьник Бригадира</h1>
-        
+
+        <div class="form-group estate-picker">
+          <label>Хозяйство:</label>
+          <select id="estate-sel" onchange="app.onEstateChange()">
+            <option value="">— выберите хозяйство —</option>
+            ${this.estates.map(e => `<option value="${e.id}" ${e.id === this.estate ? 'selected' : ''}>${this.escapeHtml(e.name)}</option>`).join('')}
+          </select>
+          <span id="estate-badge" class="estate-badge">${currentEstate ? this.escapeHtml(currentEstate.name) : ''}</span>
+        </div>
+
         <div class="tabs">
           <button class="tab-button active" onclick="app.switchTab(event, 'input')">Ввод данных</button>
           <button class="tab-button" onclick="app.switchTab(event, 'report')">Отчет за период</button>
@@ -145,6 +207,10 @@ class BrigadeAssistant {
     const cell = document.getElementById('cell-sel').value;
     const resultDiv = document.getElementById('result');
 
+    if (!this.estate) {
+      this.showResult('❌ Сначала выбери хозяйство', true, resultDiv);
+      return;
+    }
     if (!date || !input.trim()) {
       this.showResult('❌ Введи дату и хотя бы одну строку с сотрудником', true, resultDiv);
       return;
@@ -154,11 +220,11 @@ class BrigadeAssistant {
       const response = await fetch('/api/process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date, input, quarter, cell })
+        body: JSON.stringify({ date, input, estate: this.estate, quarter, cell })
       });
 
       const result = await response.json();
-      
+
       if (response.ok) {
         this.showResult(result.report, false, resultDiv);
       } else {
@@ -179,13 +245,17 @@ class BrigadeAssistant {
   async loadLogs() {
     const date = document.getElementById('logs-date').value;
     const list = document.getElementById('logs-list');
+    if (!this.estate) {
+      list.innerHTML = '<p style="color:#888;padding:10px;">Сначала выбери хозяйство</p>';
+      return;
+    }
     if (!date) {
       list.innerHTML = '<p style="color:#888;padding:10px;">Выбери дату</p>';
       return;
     }
     list.innerHTML = '<p style="padding:10px;">⏳ Загрузка...</p>';
     try {
-      const r = await fetch('/api/logs?date=' + encodeURIComponent(date));
+      const r = await fetch('/api/logs?date=' + encodeURIComponent(date) + '&estate=' + encodeURIComponent(this.estate));
       const data = await r.json();
       if (!r.ok) {
         list.innerHTML = '<p style="color:#c0392b;padding:10px;">❌ ' + (data.error || 'Ошибка') + '</p>';
@@ -239,6 +309,10 @@ class BrigadeAssistant {
     const to = document.getElementById('to-date').value;
     const resultDiv = document.getElementById('report-result');
 
+    if (!this.estate) {
+      this.showResult('❌ Сначала выбери хозяйство', true, resultDiv);
+      return;
+    }
     if (!from || !to) {
       this.showResult('❌ Укажите обе даты', true, resultDiv);
       return;
@@ -251,7 +325,7 @@ class BrigadeAssistant {
     this.showResult('⏳ Загрузка отчёта...', false, resultDiv);
 
     try {
-      const response = await fetch(`/api/report?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+      const response = await fetch(`/api/report?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&estate=${encodeURIComponent(this.estate)}`);
       const data = await response.json();
       if (response.ok) {
         this.showResult(data.report, false, resultDiv);

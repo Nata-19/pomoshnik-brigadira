@@ -43,6 +43,10 @@ pool.on('error', (err) => console.error('PG pool error:', err));
         created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    // Миграция: добавляем estate_id, старые записи становятся estate1 по умолчанию
+    await pool.query(`
+      ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS estate_id TEXT NOT NULL DEFAULT 'estate1'
+    `);
     console.log('✅ Connected to Postgres');
   } catch (err) {
     console.error('❌ Postgres init failed:', err.message);
@@ -53,19 +57,43 @@ pool.on('error', (err) => console.error('PG pool error:', err));
 // Загружаем инвентаризацию (на Render — из Secret Files, локально — из корня проекта)
 const inventoryPath = process.env.INVENTORY_PATH || path.join(__dirname, '../inventory.json');
 const inventory = JSON.parse(fs.readFileSync(inventoryPath, 'utf8'));
+if (!inventory.estates || typeof inventory.estates !== 'object') {
+  console.error('❌ inventory.json должен содержать поле "estates" (новый формат с namespace по хозяйствам).');
+  process.exit(1);
+}
 const parser = new DataParser(inventory);
 
 // API endpoints
+app.get('/api/estates', (req, res) => {
+  const estates = Object.keys(inventory.estates).map(id => ({
+    id,
+    name: inventory.estates[id].name
+  }));
+  res.json(estates);
+});
+
 app.get('/api/quarters', (req, res) => {
-  const quarters = Object.keys(inventory.quarters).map(key => ({
+  const estateId = req.query.estate;
+  if (!estateId) {
+    return res.status(400).json({ error: 'Укажи estate' });
+  }
+  const estate = inventory.estates[estateId];
+  if (!estate) {
+    return res.status(404).json({ error: 'Хозяйство не найдено' });
+  }
+  const quarters = Object.keys(estate.quarters).map(key => ({
     id: key,
-    name: inventory.quarters[key].name
+    name: estate.quarters[key].name
   }));
   res.json(quarters);
 });
 
-app.get('/api/inventory/:quarter', (req, res) => {
-  const quarter = inventory.quarters[req.params.quarter];
+app.get('/api/inventory/:estate/:quarter', (req, res) => {
+  const estate = inventory.estates[req.params.estate];
+  if (!estate) {
+    return res.status(404).json({ error: 'Estate not found' });
+  }
+  const quarter = estate.quarters[req.params.quarter];
   if (!quarter) {
     return res.status(404).json({ error: 'Quarter not found' });
   }
@@ -75,20 +103,23 @@ app.get('/api/inventory/:quarter', (req, res) => {
 // Обработка ввода данных (текстовый формат)
 app.post('/api/process', async (req, res) => {
   try {
-    const { date, input, quarter, cell } = req.body;
+    const { date, input, estate, quarter, cell } = req.body;
 
     if (!date || !input) {
       return res.status(400).json({ error: 'Некорректный формат ввода' });
     }
+    if (!estate) {
+      return res.status(400).json({ error: 'Не выбрано хозяйство' });
+    }
 
-    const { entries } = parser.parse(input, date, { quarter, cell });
+    const { entries } = parser.parse(input, date, { estate, quarter, cell });
     const report = parser.formatReport(date, entries, inventory);
 
     for (const entry of entries) {
       await pool.query(
-        `INSERT INTO work_logs (date, quarter, cell, employee, rows, bushes)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [date, entry.quarter, entry.cell, entry.employee, entry.rows.join(','), entry.bushes]
+        `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [date, entry.estate, entry.quarter, entry.cell, entry.employee, entry.rows.join(','), entry.bushes]
       );
     }
 
@@ -102,27 +133,30 @@ app.post('/api/process', async (req, res) => {
 // Health-check для UptimeRobot и Render
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// Список записей за день (для журнала + удаления)
+// Список записей за день (для журнала + удаления). Фильтр по хозяйству обязателен.
 app.get('/api/logs', async (req, res) => {
   try {
-    const { date, from, to } = req.query;
+    const { date, from, to, estate } = req.query;
+    if (!estate) {
+      return res.status(400).json({ error: 'Укажи estate' });
+    }
     let result;
     if (date) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
         return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
       }
       result = await pool.query(
-        `SELECT id, date, quarter, cell, employee, rows, bushes, created_at
-         FROM work_logs WHERE date = $1
+        `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, created_at
+         FROM work_logs WHERE date = $1 AND estate_id = $2
          ORDER BY created_at DESC`,
-        [date]
+        [date, estate]
       );
     } else if (from && to) {
       result = await pool.query(
-        `SELECT id, date, quarter, cell, employee, rows, bushes, created_at
-         FROM work_logs WHERE date >= $1 AND date <= $2
+        `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, created_at
+         FROM work_logs WHERE date >= $1 AND date <= $2 AND estate_id = $3
          ORDER BY date DESC, created_at DESC`,
-        [from, to]
+        [from, to, estate]
       );
     } else {
       return res.status(400).json({ error: 'Укажи date или from+to' });
@@ -155,12 +189,15 @@ app.delete('/api/logs/:id', async (req, res) => {
   }
 });
 
-// Отчёт за период: группировка по сотруднику → квартал/клетка
+// Отчёт за период: группировка по сотруднику → квартал/клетка (в рамках одного хозяйства)
 app.get('/api/report', async (req, res) => {
   try {
-    const { from, to } = req.query;
+    const { from, to, estate } = req.query;
     if (!from || !to) {
       return res.status(400).json({ error: 'Укажи даты from и to (YYYY-MM-DD)' });
+    }
+    if (!estate) {
+      return res.status(400).json({ error: 'Укажи estate' });
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
       return res.status(400).json({ error: 'Даты в формате YYYY-MM-DD' });
@@ -170,11 +207,11 @@ app.get('/api/report', async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT date, quarter, cell, employee, rows, bushes
+      `SELECT date, estate_id, quarter, cell, employee, rows, bushes
        FROM work_logs
-       WHERE date >= $1 AND date <= $2
+       WHERE date >= $1 AND date <= $2 AND estate_id = $3
        ORDER BY employee, quarter::int, cell::int, date`,
-      [from, to]
+      [from, to, estate]
     );
 
     if (result.rows.length === 0) {

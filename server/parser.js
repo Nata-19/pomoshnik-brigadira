@@ -128,6 +128,14 @@ class DataParser {
       throw new Error('Некорректный формат даты');
     }
 
+    const estate = defaults.estate;
+    if (!estate) {
+      throw new Error('Не указано хозяйство');
+    }
+    if (!this.inventory.estates || !this.inventory.estates[estate]) {
+      throw new Error(`Хозяйство "${estate}" не найдено в инвентаризации`);
+    }
+
     // Разбиваем по блокам (квартал, клетка)
     const lines = input.split('\n').filter(l => l.trim());
     const ctx = {
@@ -194,8 +202,9 @@ class DataParser {
 
         // Количество кустов из инвентаризации
         try {
-          const bushes = this.getBushesCount(quarter, cell, rows);
+          const bushes = this.getBushesCount(estate, quarter, cell, rows);
           entries.push({
+            estate,
             quarter,
             cell,
             employee: employee.trim(),
@@ -245,8 +254,13 @@ class DataParser {
     return Array.from(rows).sort((a, b) => a - b);
   }
 
-  getBushesCount(quarter, cell, rows) {
-    const qdata = this.inventory.quarters[quarter];
+  getBushesCount(estate, quarter, cell, rows) {
+    const edata = this.inventory.estates[estate];
+    if (!edata) {
+      throw new Error(`Хозяйство "${estate}" не найдено в инвентаризации`);
+    }
+
+    const qdata = edata.quarters[quarter];
     if (!qdata) {
       throw new Error(`Ряды отсутствуют в инвентаризации для квартала ${quarter}`);
     }

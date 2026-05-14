@@ -204,6 +204,38 @@ button:active {
     background: #c0392b;
 }
 
+.estate-picker {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.estate-picker label {
+    margin-bottom: 0;
+    flex-shrink: 0;
+}
+
+.estate-picker select {
+    flex: 1;
+    min-width: 200px;
+}
+
+.estate-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 12px;
+    background: #667eea;
+    color: white;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.estate-badge:empty {
+    display: none;
+}
+
 .voice-row {
     display: flex;
     align-items: center;
