@@ -338,70 +338,106 @@ class BrigadeAssistant {
   }
 
   initVoiceInput() {
-    // Для записи используем MediaRecorder (доступен везде, кроме совсем старых браузеров)
-    if (!navigator.mediaDevices || !window.MediaRecorder) {
+    // Web Speech API: распознавание речи прямо в браузере, без сервера.
+    // Если браузер не поддерживает (старый Android, часть iPhone) —
+    // прячем кнопку, остаётся ручной ввод.
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
       const btn = document.getElementById('voice-btn');
       if (btn) btn.style.display = 'none';
-      return;
     }
   }
 
-  async toggleVoice() {
+  toggleVoice() {
     if (this.isRecording) {
       this.stopRecording();
     } else {
-      await this.startRecording();
+      this.startRecording();
     }
   }
 
-  async startRecording() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      this.audioStream = stream;
-      this.audioChunks = [];
+  startRecording() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      this.setVoiceStatus('❌ Браузер не поддерживает распознавание речи');
+      return;
+    }
 
-      // Подбираем поддерживаемый формат — Android и iOS могут различаться
-      const mimes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
-      let mime = '';
-      for (const m of mimes) {
-        if (window.MediaRecorder.isTypeSupported && window.MediaRecorder.isTypeSupported(m)) {
-          mime = m;
-          break;
+    const textarea = document.getElementById('input');
+    // Базовый текст — то, что уже было в поле до начала записи.
+    this.voiceBaseText = textarea.value;
+    // Накопитель завершённых фраз: каждая пауза в речи = новая строка.
+    this.voiceFinalText = '';
+
+    const recognition = new SR();
+    recognition.lang = 'ru-RU';
+    recognition.continuous = true;      // не обрывается на паузах
+    recognition.interimResults = true;  // живой текст по ходу речи
+
+    recognition.onresult = (event) => {
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const res = event.results[i];
+        const transcript = res[0].transcript.trim();
+        if (res.isFinal) {
+          if (transcript) {
+            this.voiceFinalText += (this.voiceFinalText ? '\n' : '') + transcript;
+          }
+        } else {
+          interim += res[0].transcript;
         }
       }
-      this.mediaRecorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      // Пересобираем textarea: базовый текст + финальные фразы + промежуточная.
+      const parts = [];
+      if (this.voiceBaseText) parts.push(this.voiceBaseText);
+      if (this.voiceFinalText) parts.push(this.voiceFinalText);
+      let combined = parts.join('\n');
+      if (interim.trim()) {
+        combined += (combined ? '\n' : '') + interim.trim();
+      }
+      textarea.value = combined;
+    };
 
-      this.mediaRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) this.audioChunks.push(e.data);
-      };
+    recognition.onerror = (event) => {
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        this.setVoiceStatus('❌ Нет доступа к микрофону');
+      } else if (event.error === 'no-speech') {
+        this.setVoiceStatus('⚠ Речь не распознана');
+      } else if (event.error === 'network') {
+        this.setVoiceStatus('❌ Нет сети');
+      } else {
+        this.setVoiceStatus('❌ Ошибка распознавания');
+      }
+    };
 
-      this.mediaRecorder.onstop = async () => {
-        // Закрываем поток микрофона
-        try { stream.getTracks().forEach(t => t.stop()); } catch {}
-
-        const blob = new Blob(this.audioChunks, { type: this.mediaRecorder.mimeType || 'audio/webm' });
-        if (blob.size === 0) {
-          this.setVoiceStatus('');
-          return;
-        }
-        await this.transcribeBlob(blob);
-      };
-
-      this.mediaRecorder.start();
-      this.isRecording = true;
+    recognition.onend = () => {
+      this.isRecording = false;
+      this.recognition = null;
       this.updateVoiceUI();
-      this.setVoiceStatus('🔴 Запись... жми «⏹ Стоп», когда закончишь');
+    };
+
+    this.recognition = recognition;
+    this.isRecording = true;
+    this.updateVoiceUI();
+    this.setVoiceStatus('🔴 Запись... жми «⏹ Стоп», когда закончишь');
+
+    try {
+      recognition.start();
     } catch (err) {
-      this.setVoiceStatus('❌ Микрофон: ' + err.message);
+      this.isRecording = false;
+      this.recognition = null;
+      this.updateVoiceUI();
+      this.setVoiceStatus('❌ ' + err.message);
     }
   }
 
   stopRecording() {
-    if (!this.mediaRecorder) return;
-    try { this.mediaRecorder.stop(); } catch {}
+    if (this.recognition) {
+      try { this.recognition.stop(); } catch (e) {}
+    }
     this.isRecording = false;
     this.updateVoiceUI();
-    this.setVoiceStatus('⏳ Распознаю...');
+    this.setVoiceStatus('');
   }
 
   setVoiceStatus(text) {
@@ -409,47 +445,15 @@ class BrigadeAssistant {
     if (el) el.textContent = text;
   }
 
-  async transcribeBlob(blob) {
-    try {
-      // Просто шлём аудио-blob на сервер; сервер передаст его в Hugging Face API.
-      const response = await fetch('/api/transcribe', {
-        method: 'POST',
-        headers: { 'Content-Type': blob.type || 'audio/webm' },
-        body: blob,
-      });
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        this.setVoiceStatus('❌ ' + (data.error || ('HTTP ' + response.status)));
-        return;
-      }
-      const data = await response.json();
-      const text = (data.text || '').trim();
-      if (!text) {
-        this.setVoiceStatus('⚠ Ничего не распознано — попробуй ещё раз');
-        return;
-      }
-      const textarea = document.getElementById('input');
-      textarea.value += (textarea.value ? '\n' : '') + text;
-      this.setVoiceStatus('');
-    } catch (err) {
-      this.setVoiceStatus('❌ ' + err.message);
-    }
-  }
-
   updateVoiceUI() {
     const btn = document.getElementById('voice-btn');
-    const status = document.getElementById('voice-status');
-    if (!btn || !status) return;
-
+    if (!btn) return;
     if (this.isRecording) {
       btn.textContent = '⏹ Стоп';
       btn.classList.add('recording');
-      status.textContent = '🔴 Запись...';
     } else {
       btn.textContent = '🎤 Голос';
       btn.classList.remove('recording');
-      status.textContent = '';
     }
   }
 }
