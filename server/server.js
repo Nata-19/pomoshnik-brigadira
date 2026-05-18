@@ -5,13 +5,18 @@ const path = require('path');
 const { Pool } = require('pg');
 const fs = require('fs');
 const DataParser = require('./parser');
+const cookieParser = require('cookie-parser');
+const crypto = require('crypto');
+const auth = require('./auth');
 
 const app = express();
+app.set('trust proxy', 1); // за HTTPS-прокси Render
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
+app.use(cookieParser());
 
 // Статические файлы
 app.use(express.static(path.join(__dirname, '../public')));
@@ -29,6 +34,9 @@ const pool = new Pool({
 
 pool.on('error', (err) => console.error('PG pool error:', err));
 
+let SESSION_SECRET = null;
+const getSecret = () => SESSION_SECRET;
+
 (async () => {
   try {
     await pool.query(`
@@ -43,10 +51,41 @@ pool.on('error', (err) => console.error('PG pool error:', err));
         created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    // Миграция: добавляем estate_id, старые записи становятся estate1 по умолчанию
     await pool.query(`
       ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS estate_id TEXT NOT NULL DEFAULT 'estate1'
     `);
+    await pool.query(`
+      ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS brigadier_id INTEGER
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS brigadiers (
+        id SERIAL PRIMARY KEY,
+        login TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        is_admin BOOLEAN NOT NULL DEFAULT false,
+        label TEXT,
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
+    const secretRow = await pool.query(
+      "SELECT value FROM app_settings WHERE key = 'session_secret'"
+    );
+    if (secretRow.rows.length > 0) {
+      SESSION_SECRET = secretRow.rows[0].value;
+    } else {
+      SESSION_SECRET = crypto.randomBytes(48).toString('hex');
+      await pool.query(
+        "INSERT INTO app_settings (key, value) VALUES ('session_secret', $1)",
+        [SESSION_SECRET]
+      );
+    }
     console.log('✅ Connected to Postgres');
   } catch (err) {
     console.error('❌ Postgres init failed:', err.message);
@@ -63,8 +102,20 @@ if (!inventory.estates || typeof inventory.estates !== 'object') {
 }
 const parser = new DataParser(inventory);
 
+// Middleware «требуется вход» — переиспользуется на всех защищённых маршрутах.
+const requireAuthMw = auth.requireAuth(pool, getSecret);
+
+function setAuthCookie(res, token) {
+  res.cookie('token', token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'lax',
+    maxAge: 365 * 24 * 60 * 60 * 1000,
+  });
+}
+
 // API endpoints
-app.get('/api/estates', (req, res) => {
+app.get('/api/estates', requireAuthMw, (req, res) => {
   const estates = Object.keys(inventory.estates).map(id => ({
     id,
     name: inventory.estates[id].name
@@ -72,7 +123,7 @@ app.get('/api/estates', (req, res) => {
   res.json(estates);
 });
 
-app.get('/api/quarters', (req, res) => {
+app.get('/api/quarters', requireAuthMw, (req, res) => {
   const estateId = req.query.estate;
   if (!estateId) {
     return res.status(400).json({ error: 'Укажи estate' });
@@ -88,7 +139,7 @@ app.get('/api/quarters', (req, res) => {
   res.json(quarters);
 });
 
-app.get('/api/inventory/:estate/:quarter', (req, res) => {
+app.get('/api/inventory/:estate/:quarter', requireAuthMw, (req, res) => {
   const estate = inventory.estates[req.params.estate];
   if (!estate) {
     return res.status(404).json({ error: 'Estate not found' });
@@ -101,7 +152,7 @@ app.get('/api/inventory/:estate/:quarter', (req, res) => {
 });
 
 // Обработка ввода данных (текстовый формат)
-app.post('/api/process', async (req, res) => {
+app.post('/api/process', requireAuthMw, async (req, res) => {
   try {
     const { date, input, estate, quarter, cell } = req.body;
 
@@ -117,9 +168,10 @@ app.post('/api/process', async (req, res) => {
 
     for (const entry of entries) {
       await pool.query(
-        `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [date, entry.estate, entry.quarter, entry.cell, entry.employee, entry.rows.join(','), entry.bushes]
+        `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [date, entry.estate, entry.quarter, entry.cell, entry.employee,
+         entry.rows.join(','), entry.bushes, req.brigadier.id]
       );
     }
 
@@ -130,11 +182,201 @@ app.post('/api/process', async (req, res) => {
   }
 });
 
+// Первичная настройка: создание админ-аккаунта (работает, пока админа нет).
+app.get('/api/setup-needed', async (req, res) => {
+  try {
+    const r = await pool.query("SELECT 1 FROM brigadiers WHERE is_admin = true LIMIT 1");
+    res.json({ needed: r.rows.length === 0 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/setup', async (req, res) => {
+  try {
+    const adminExists = await pool.query(
+      "SELECT 1 FROM brigadiers WHERE is_admin = true LIMIT 1"
+    );
+    if (adminExists.rows.length > 0) {
+      return res.status(400).json({ error: 'Настройка уже выполнена' });
+    }
+    const { login, password } = req.body;
+    if (!login || !login.trim()) {
+      return res.status(400).json({ error: 'Укажи логин' });
+    }
+    if (!password || password.length < 6) {
+      return res.status(400).json({ error: 'Пароль не короче 6 символов' });
+    }
+    const ins = await pool.query(
+      `INSERT INTO brigadiers (login, password_hash, status, is_admin)
+       VALUES ($1, $2, 'active', true) RETURNING id`,
+      [login.trim(), auth.hashPassword(password)]
+    );
+    const adminId = ins.rows[0].id;
+    // Существующие записи привязываем к админу.
+    await pool.query(
+      'UPDATE work_logs SET brigadier_id = $1 WHERE brigadier_id IS NULL',
+      [adminId]
+    );
+    setAuthCookie(res, auth.signToken(adminId, SESSION_SECRET));
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Setup error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Регистрация — создаёт аккаунт в статусе «ожидает подтверждения».
+app.post('/api/register', async (req, res) => {
+  try {
+    const { login, password } = req.body;
+    if (!login || !login.trim()) {
+      return res.status(400).json({ error: 'Укажи логин' });
+    }
+    if (!password || password.length < 6) {
+      return res.status(400).json({ error: 'Пароль не короче 6 символов' });
+    }
+    const exists = await pool.query(
+      'SELECT 1 FROM brigadiers WHERE LOWER(login) = LOWER($1)',
+      [login.trim()]
+    );
+    if (exists.rows.length > 0) {
+      return res.status(400).json({ error: 'Логин занят' });
+    }
+    await pool.query(
+      "INSERT INTO brigadiers (login, password_hash, status) VALUES ($1, $2, 'pending')",
+      [login.trim(), auth.hashPassword(password)]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Register error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Вход — разрешён только для статуса active.
+app.post('/api/login', async (req, res) => {
+  try {
+    const { login, password } = req.body;
+    if (!login || !password) {
+      return res.status(400).json({ error: 'Укажи логин и пароль' });
+    }
+    const r = await pool.query(
+      'SELECT * FROM brigadiers WHERE LOWER(login) = LOWER($1)',
+      [login.trim()]
+    );
+    const brigadier = r.rows[0];
+    if (!brigadier || !auth.verifyPassword(password, brigadier.password_hash)) {
+      return res.status(401).json({ error: 'Неверный логин или пароль' });
+    }
+    if (brigadier.status === 'pending') {
+      return res.status(403).json({ error: 'Заявка ещё не подтверждена администратором' });
+    }
+    if (brigadier.status === 'disabled') {
+      return res.status(403).json({ error: 'Аккаунт отключён, обратитесь к администратору' });
+    }
+    setAuthCookie(res, auth.signToken(brigadier.id, SESSION_SECRET));
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Login error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/logout', (req, res) => {
+  res.clearCookie('token');
+  res.json({ success: true });
+});
+
+app.get('/api/me', requireAuthMw, (req, res) => {
+  res.json({ login: req.brigadier.login, is_admin: req.brigadier.is_admin });
+});
+
+// --- Админские endpoint'ы (только для is_admin) ---
+app.get('/api/admin/brigadiers', requireAuthMw, auth.requireAdmin, async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT id, login, status, is_admin, label, created_at
+       FROM brigadiers ORDER BY created_at DESC`
+    );
+    res.json({ brigadiers: r.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/brigadiers/:id/approve', requireAuthMw, auth.requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    await pool.query(
+      "UPDATE brigadiers SET status = 'active' WHERE id = $1 AND status = 'pending'",
+      [id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/brigadiers/:id/disable', requireAuthMw, auth.requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (id === req.brigadier.id) {
+      return res.status(400).json({ error: 'Нельзя отключить свой аккаунт' });
+    }
+    await pool.query("UPDATE brigadiers SET status = 'disabled' WHERE id = $1", [id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/brigadiers/:id/enable', requireAuthMw, auth.requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    await pool.query(
+      "UPDATE brigadiers SET status = 'active' WHERE id = $1 AND status = 'disabled'",
+      [id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/brigadiers/:id/label', requireAuthMw, auth.requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const label = (req.body.label || '').trim() || null;
+    await pool.query('UPDATE brigadiers SET label = $1 WHERE id = $2', [label, id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/brigadiers/:id/reset-password', requireAuthMw, auth.requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { password } = req.body;
+    if (!password || password.length < 6) {
+      return res.status(400).json({ error: 'Пароль не короче 6 символов' });
+    }
+    await pool.query(
+      'UPDATE brigadiers SET password_hash = $1 WHERE id = $2',
+      [auth.hashPassword(password), id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Health-check для UptimeRobot и Render
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 // Список записей за день (для журнала + удаления). Фильтр по хозяйству обязателен.
-app.get('/api/logs', async (req, res) => {
+app.get('/api/logs', requireAuthMw, async (req, res) => {
   try {
     const { date, from, to, estate } = req.query;
     if (!estate) {
@@ -147,16 +389,16 @@ app.get('/api/logs', async (req, res) => {
       }
       result = await pool.query(
         `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, created_at
-         FROM work_logs WHERE date = $1 AND estate_id = $2
+         FROM work_logs WHERE date = $1 AND estate_id = $2 AND brigadier_id = $3
          ORDER BY created_at DESC`,
-        [date, estate]
+        [date, estate, req.brigadier.id]
       );
     } else if (from && to) {
       result = await pool.query(
         `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, created_at
-         FROM work_logs WHERE date >= $1 AND date <= $2 AND estate_id = $3
+         FROM work_logs WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND brigadier_id = $4
          ORDER BY date DESC, created_at DESC`,
-        [from, to, estate]
+        [from, to, estate, req.brigadier.id]
       );
     } else {
       return res.status(400).json({ error: 'Укажи date или from+to' });
@@ -169,15 +411,15 @@ app.get('/api/logs', async (req, res) => {
 });
 
 // Удаление записи
-app.delete('/api/logs/:id', async (req, res) => {
+app.delete('/api/logs/:id', requireAuthMw, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ error: 'Некорректный id' });
     }
     const result = await pool.query(
-      'DELETE FROM work_logs WHERE id = $1 RETURNING *',
-      [id]
+      'DELETE FROM work_logs WHERE id = $1 AND brigadier_id = $2 RETURNING *',
+      [id, req.brigadier.id]
     );
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Запись не найдена' });
@@ -190,7 +432,7 @@ app.delete('/api/logs/:id', async (req, res) => {
 });
 
 // Отчёт за период: группировка по сотруднику → квартал/клетка (в рамках одного хозяйства)
-app.get('/api/report', async (req, res) => {
+app.get('/api/report', requireAuthMw, async (req, res) => {
   try {
     const { from, to, estate } = req.query;
     if (!from || !to) {
@@ -209,9 +451,9 @@ app.get('/api/report', async (req, res) => {
     const result = await pool.query(
       `SELECT date, estate_id, quarter, cell, employee, rows, bushes
        FROM work_logs
-       WHERE date >= $1 AND date <= $2 AND estate_id = $3
+       WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND brigadier_id = $4
        ORDER BY employee, quarter::int, cell::int, date`,
-      [from, to, estate]
+      [from, to, estate, req.brigadier.id]
     );
 
     if (result.rows.length === 0) {
@@ -268,6 +510,7 @@ app.get('/api/report', async (req, res) => {
 // Браузер шлёт сырой аудио-blob (WebM/Opus), мы прокидываем в HF.
 const HF_MODEL = 'openai/whisper-small';
 app.post('/api/transcribe',
+  requireAuthMw,
   express.raw({ type: ['audio/*', 'application/octet-stream'], limit: '20mb' }),
   async (req, res) => {
     try {
