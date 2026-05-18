@@ -366,8 +366,6 @@ class BrigadeAssistant {
     const textarea = document.getElementById('input');
     // Базовый текст — то, что уже было в поле до начала записи.
     this.voiceBaseText = textarea.value;
-    // Накопитель завершённых фраз: каждая пауза в речи = новая строка.
-    this.voiceFinalText = '';
 
     const recognition = new SR();
     recognition.lang = 'ru-RU';
@@ -375,27 +373,27 @@ class BrigadeAssistant {
     recognition.interimResults = true;  // живой текст по ходу речи
 
     recognition.onresult = (event) => {
-      let interim = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
+      // Пересобираем текст с нуля на каждом событии — идемпотентно.
+      // На Android Chrome event.resultIndex ненадёжен, и уже распознанные
+      // фразы приходят повторно; накапливать нельзя — строки задвоятся.
+      let finalText = '';
+      let interimText = '';
+      for (let i = 0; i < event.results.length; i++) {
         const res = event.results[i];
-        const transcript = res[0].transcript.trim();
+        const transcript = (res[0].transcript || '').trim();
+        if (!transcript) continue;
         if (res.isFinal) {
-          if (transcript) {
-            this.voiceFinalText += (this.voiceFinalText ? '\n' : '') + transcript;
-          }
+          finalText += (finalText ? '\n' : '') + transcript;
         } else {
-          interim += res[0].transcript;
+          interimText += (interimText ? ' ' : '') + transcript;
         }
       }
-      // Пересобираем textarea: базовый текст + финальные фразы + промежуточная.
+      // Базовый текст + завершённые фразы (каждая на своей строке) + текущая.
       const parts = [];
       if (this.voiceBaseText) parts.push(this.voiceBaseText);
-      if (this.voiceFinalText) parts.push(this.voiceFinalText);
-      let combined = parts.join('\n');
-      if (interim.trim()) {
-        combined += (combined ? '\n' : '') + interim.trim();
-      }
-      textarea.value = combined;
+      if (finalText) parts.push(finalText);
+      if (interimText) parts.push(interimText);
+      textarea.value = parts.join('\n');
     };
 
     recognition.onerror = (event) => {
