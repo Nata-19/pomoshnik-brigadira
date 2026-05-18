@@ -115,7 +115,7 @@ function setAuthCookie(res, token) {
 }
 
 // API endpoints
-app.get('/api/estates', (req, res) => {
+app.get('/api/estates', requireAuthMw, (req, res) => {
   const estates = Object.keys(inventory.estates).map(id => ({
     id,
     name: inventory.estates[id].name
@@ -123,7 +123,7 @@ app.get('/api/estates', (req, res) => {
   res.json(estates);
 });
 
-app.get('/api/quarters', (req, res) => {
+app.get('/api/quarters', requireAuthMw, (req, res) => {
   const estateId = req.query.estate;
   if (!estateId) {
     return res.status(400).json({ error: 'Укажи estate' });
@@ -139,7 +139,7 @@ app.get('/api/quarters', (req, res) => {
   res.json(quarters);
 });
 
-app.get('/api/inventory/:estate/:quarter', (req, res) => {
+app.get('/api/inventory/:estate/:quarter', requireAuthMw, (req, res) => {
   const estate = inventory.estates[req.params.estate];
   if (!estate) {
     return res.status(404).json({ error: 'Estate not found' });
@@ -152,7 +152,7 @@ app.get('/api/inventory/:estate/:quarter', (req, res) => {
 });
 
 // Обработка ввода данных (текстовый формат)
-app.post('/api/process', async (req, res) => {
+app.post('/api/process', requireAuthMw, async (req, res) => {
   try {
     const { date, input, estate, quarter, cell } = req.body;
 
@@ -168,9 +168,10 @@ app.post('/api/process', async (req, res) => {
 
     for (const entry of entries) {
       await pool.query(
-        `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [date, entry.estate, entry.quarter, entry.cell, entry.employee, entry.rows.join(','), entry.bushes]
+        `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [date, entry.estate, entry.quarter, entry.cell, entry.employee,
+         entry.rows.join(','), entry.bushes, req.brigadier.id]
       );
     }
 
@@ -295,7 +296,7 @@ app.get('/api/me', requireAuthMw, (req, res) => {
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 // Список записей за день (для журнала + удаления). Фильтр по хозяйству обязателен.
-app.get('/api/logs', async (req, res) => {
+app.get('/api/logs', requireAuthMw, async (req, res) => {
   try {
     const { date, from, to, estate } = req.query;
     if (!estate) {
@@ -308,16 +309,16 @@ app.get('/api/logs', async (req, res) => {
       }
       result = await pool.query(
         `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, created_at
-         FROM work_logs WHERE date = $1 AND estate_id = $2
+         FROM work_logs WHERE date = $1 AND estate_id = $2 AND brigadier_id = $3
          ORDER BY created_at DESC`,
-        [date, estate]
+        [date, estate, req.brigadier.id]
       );
     } else if (from && to) {
       result = await pool.query(
         `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, created_at
-         FROM work_logs WHERE date >= $1 AND date <= $2 AND estate_id = $3
+         FROM work_logs WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND brigadier_id = $4
          ORDER BY date DESC, created_at DESC`,
-        [from, to, estate]
+        [from, to, estate, req.brigadier.id]
       );
     } else {
       return res.status(400).json({ error: 'Укажи date или from+to' });
@@ -330,15 +331,15 @@ app.get('/api/logs', async (req, res) => {
 });
 
 // Удаление записи
-app.delete('/api/logs/:id', async (req, res) => {
+app.delete('/api/logs/:id', requireAuthMw, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ error: 'Некорректный id' });
     }
     const result = await pool.query(
-      'DELETE FROM work_logs WHERE id = $1 RETURNING *',
-      [id]
+      'DELETE FROM work_logs WHERE id = $1 AND brigadier_id = $2 RETURNING *',
+      [id, req.brigadier.id]
     );
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Запись не найдена' });
@@ -351,7 +352,7 @@ app.delete('/api/logs/:id', async (req, res) => {
 });
 
 // Отчёт за период: группировка по сотруднику → квартал/клетка (в рамках одного хозяйства)
-app.get('/api/report', async (req, res) => {
+app.get('/api/report', requireAuthMw, async (req, res) => {
   try {
     const { from, to, estate } = req.query;
     if (!from || !to) {
@@ -370,9 +371,9 @@ app.get('/api/report', async (req, res) => {
     const result = await pool.query(
       `SELECT date, estate_id, quarter, cell, employee, rows, bushes
        FROM work_logs
-       WHERE date >= $1 AND date <= $2 AND estate_id = $3
+       WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND brigadier_id = $4
        ORDER BY employee, quarter::int, cell::int, date`,
-      [from, to, estate]
+      [from, to, estate, req.brigadier.id]
     );
 
     if (result.rows.length === 0) {
@@ -429,6 +430,7 @@ app.get('/api/report', async (req, res) => {
 // Браузер шлёт сырой аудио-blob (WebM/Opus), мы прокидываем в HF.
 const HF_MODEL = 'openai/whisper-small';
 app.post('/api/transcribe',
+  requireAuthMw,
   express.raw({ type: ['audio/*', 'application/octet-stream'], limit: '20mb' }),
   async (req, res) => {
     try {
