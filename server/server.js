@@ -5,13 +5,18 @@ const path = require('path');
 const { Pool } = require('pg');
 const fs = require('fs');
 const DataParser = require('./parser');
+const cookieParser = require('cookie-parser');
+const crypto = require('crypto');
+const auth = require('./auth');
 
 const app = express();
+app.set('trust proxy', 1); // за HTTPS-прокси Render
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
+app.use(cookieParser());
 
 // Статические файлы
 app.use(express.static(path.join(__dirname, '../public')));
@@ -29,6 +34,9 @@ const pool = new Pool({
 
 pool.on('error', (err) => console.error('PG pool error:', err));
 
+let SESSION_SECRET = null;
+const getSecret = () => SESSION_SECRET;
+
 (async () => {
   try {
     await pool.query(`
@@ -43,10 +51,41 @@ pool.on('error', (err) => console.error('PG pool error:', err));
         created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    // Миграция: добавляем estate_id, старые записи становятся estate1 по умолчанию
     await pool.query(`
       ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS estate_id TEXT NOT NULL DEFAULT 'estate1'
     `);
+    await pool.query(`
+      ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS brigadier_id INTEGER
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS brigadiers (
+        id SERIAL PRIMARY KEY,
+        login TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        is_admin BOOLEAN NOT NULL DEFAULT false,
+        label TEXT,
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
+    const secretRow = await pool.query(
+      "SELECT value FROM app_settings WHERE key = 'session_secret'"
+    );
+    if (secretRow.rows.length > 0) {
+      SESSION_SECRET = secretRow.rows[0].value;
+    } else {
+      SESSION_SECRET = crypto.randomBytes(48).toString('hex');
+      await pool.query(
+        "INSERT INTO app_settings (key, value) VALUES ('session_secret', $1)",
+        [SESSION_SECRET]
+      );
+    }
     console.log('✅ Connected to Postgres');
   } catch (err) {
     console.error('❌ Postgres init failed:', err.message);
