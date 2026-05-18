@@ -1,5 +1,6 @@
 class BrigadeAssistant {
   constructor() {
+    this.me = null;
     this.estates = [];
     this.estate = localStorage.getItem('selectedEstate') || '';
     this.quarters = [];
@@ -11,8 +12,25 @@ class BrigadeAssistant {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(e => console.log('SW error:', e));
     }
+    // Нужна ли первичная настройка (нет ни одного администратора)?
+    try {
+      const sr = await fetch('/api/setup-needed');
+      const sd = await sr.json();
+      if (sd.needed) { this.renderSetup(); return; }
+    } catch (e) { /* сервер недоступен — упадём в экран входа ниже */ }
+    // Вошёл ли пользователь?
+    try {
+      const mr = await fetch('/api/me');
+      if (mr.ok) {
+        this.me = await mr.json();
+      } else {
+        this.renderAuth(); return;
+      }
+    } catch (e) {
+      this.renderAuth(); return;
+    }
+    // Вошёл — грузим приложение.
     await this.loadEstates();
-    // Если сохранённое хозяйство более не существует — сбрасываем
     if (this.estate && !this.estates.find(e => e.id === this.estate)) {
       this.estate = '';
       localStorage.removeItem('selectedEstate');
@@ -21,6 +39,17 @@ class BrigadeAssistant {
       await this.loadQuarters();
     }
     this.render();
+  }
+
+  // Обёртка над fetch: при 401 (вошёл — но больше не активен) — экран входа.
+  async apiFetch(url, options) {
+    const r = await fetch(url, options);
+    if (r.status === 401) {
+      this.me = null;
+      this.renderAuth();
+      throw new Error('Требуется вход');
+    }
+    return r;
   }
 
   async loadEstates() {
@@ -98,6 +127,119 @@ class BrigadeAssistant {
       opt.value = c;
       opt.textContent = 'Клетка ' + c;
       cSel.appendChild(opt);
+    }
+  }
+
+  renderSetup() {
+    const root = document.getElementById('root');
+    root.innerHTML = `
+      <div class="container auth-box">
+        <h1>🍇 Первичная настройка</h1>
+        <p class="auth-hint">Создайте аккаунт администратора. Это делается один раз.</p>
+        <div class="form-group">
+          <label>Логин администратора:</label>
+          <input type="text" id="setup-login" autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label>Пароль (не короче 6 символов):</label>
+          <input type="password" id="setup-password" autocomplete="new-password">
+        </div>
+        <button onclick="app.submitSetup()">Создать администратора</button>
+        <div id="auth-msg" class="auth-msg"></div>
+      </div>
+    `;
+  }
+
+  async submitSetup() {
+    const login = document.getElementById('setup-login').value.trim();
+    const password = document.getElementById('setup-password').value;
+    const msg = document.getElementById('auth-msg');
+    if (!login || !password) { msg.textContent = '❌ Укажи логин и пароль'; return; }
+    try {
+      const r = await fetch('/api/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ login, password }),
+      });
+      const data = await r.json();
+      if (r.ok) {
+        location.reload();
+      } else {
+        msg.textContent = '❌ ' + (data.error || 'Ошибка');
+      }
+    } catch (e) {
+      msg.textContent = '❌ ' + e.message;
+    }
+  }
+
+  renderAuth(mode) {
+    this.authMode = mode === 'register' ? 'register' : 'login';
+    const root = document.getElementById('root');
+    const isReg = this.authMode === 'register';
+    root.innerHTML = `
+      <div class="container auth-box">
+        <h1>🍇 Помощьник Бригадира</h1>
+        <div class="tabs">
+          <button class="tab-button ${isReg ? '' : 'active'}" onclick="app.renderAuth('login')">Войти</button>
+          <button class="tab-button ${isReg ? 'active' : ''}" onclick="app.renderAuth('register')">Зарегистрироваться</button>
+        </div>
+        <div class="form-group">
+          <label>Логин:</label>
+          <input type="text" id="auth-login" autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label>Пароль${isReg ? ' (не короче 6 символов)' : ''}:</label>
+          <input type="password" id="auth-password" autocomplete="${isReg ? 'new-password' : 'current-password'}">
+        </div>
+        <button onclick="app.${isReg ? 'submitRegister' : 'submitLogin'}()">${isReg ? 'Зарегистрироваться' : 'Войти'}</button>
+        <div id="auth-msg" class="auth-msg"></div>
+      </div>
+    `;
+  }
+
+  async submitLogin() {
+    const login = document.getElementById('auth-login').value.trim();
+    const password = document.getElementById('auth-password').value;
+    const msg = document.getElementById('auth-msg');
+    if (!login || !password) { msg.textContent = '❌ Укажи логин и пароль'; return; }
+    try {
+      const r = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ login, password }),
+      });
+      const data = await r.json();
+      if (r.ok) {
+        location.reload();
+      } else {
+        msg.textContent = '❌ ' + (data.error || 'Ошибка');
+      }
+    } catch (e) {
+      msg.textContent = '❌ ' + e.message;
+    }
+  }
+
+  async submitRegister() {
+    const login = document.getElementById('auth-login').value.trim();
+    const password = document.getElementById('auth-password').value;
+    const msg = document.getElementById('auth-msg');
+    if (!login || !password) { msg.textContent = '❌ Укажи логин и пароль'; return; }
+    try {
+      const r = await fetch('/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ login, password }),
+      });
+      const data = await r.json();
+      if (r.ok) {
+        msg.className = 'auth-msg auth-ok';
+        msg.textContent = '✅ Заявка отправлена. Ожидайте подтверждения администратором.';
+      } else {
+        msg.className = 'auth-msg';
+        msg.textContent = '❌ ' + (data.error || 'Ошибка');
+      }
+    } catch (e) {
+      msg.textContent = '❌ ' + e.message;
     }
   }
 
