@@ -292,6 +292,86 @@ app.get('/api/me', requireAuthMw, (req, res) => {
   res.json({ login: req.brigadier.login, is_admin: req.brigadier.is_admin });
 });
 
+// --- Админские endpoint'ы (только для is_admin) ---
+app.get('/api/admin/brigadiers', requireAuthMw, auth.requireAdmin, async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT id, login, status, is_admin, label, created_at
+       FROM brigadiers ORDER BY created_at DESC`
+    );
+    res.json({ brigadiers: r.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/brigadiers/:id/approve', requireAuthMw, auth.requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    await pool.query(
+      "UPDATE brigadiers SET status = 'active' WHERE id = $1 AND status = 'pending'",
+      [id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/brigadiers/:id/disable', requireAuthMw, auth.requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (id === req.brigadier.id) {
+      return res.status(400).json({ error: 'Нельзя отключить свой аккаунт' });
+    }
+    await pool.query("UPDATE brigadiers SET status = 'disabled' WHERE id = $1", [id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/brigadiers/:id/enable', requireAuthMw, auth.requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    await pool.query(
+      "UPDATE brigadiers SET status = 'active' WHERE id = $1 AND status = 'disabled'",
+      [id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/brigadiers/:id/label', requireAuthMw, auth.requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const label = (req.body.label || '').trim() || null;
+    await pool.query('UPDATE brigadiers SET label = $1 WHERE id = $2', [label, id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/brigadiers/:id/reset-password', requireAuthMw, auth.requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { password } = req.body;
+    if (!password || password.length < 6) {
+      return res.status(400).json({ error: 'Пароль не короче 6 символов' });
+    }
+    await pool.query(
+      'UPDATE brigadiers SET password_hash = $1 WHERE id = $2',
+      [auth.hashPassword(password), id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Health-check для UptimeRobot и Render
 app.get('/health', (req, res) => res.json({ ok: true }));
 
