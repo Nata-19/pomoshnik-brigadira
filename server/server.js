@@ -102,6 +102,18 @@ if (!inventory.estates || typeof inventory.estates !== 'object') {
 }
 const parser = new DataParser(inventory);
 
+// Middleware «требуется вход» — переиспользуется на всех защищённых маршрутах.
+const requireAuthMw = auth.requireAuth(pool, getSecret);
+
+function setAuthCookie(res, token) {
+  res.cookie('token', token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'lax',
+    maxAge: 365 * 24 * 60 * 60 * 1000,
+  });
+}
+
 // API endpoints
 app.get('/api/estates', (req, res) => {
   const estates = Object.keys(inventory.estates).map(id => ({
@@ -166,6 +178,50 @@ app.post('/api/process', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(400).json({ error: error.message });
+  }
+});
+
+// Первичная настройка: создание админ-аккаунта (работает, пока админа нет).
+app.get('/api/setup-needed', async (req, res) => {
+  try {
+    const r = await pool.query("SELECT 1 FROM brigadiers WHERE is_admin = true LIMIT 1");
+    res.json({ needed: r.rows.length === 0 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/setup', async (req, res) => {
+  try {
+    const adminExists = await pool.query(
+      "SELECT 1 FROM brigadiers WHERE is_admin = true LIMIT 1"
+    );
+    if (adminExists.rows.length > 0) {
+      return res.status(400).json({ error: 'Настройка уже выполнена' });
+    }
+    const { login, password } = req.body;
+    if (!login || !login.trim()) {
+      return res.status(400).json({ error: 'Укажи логин' });
+    }
+    if (!password || password.length < 6) {
+      return res.status(400).json({ error: 'Пароль не короче 6 символов' });
+    }
+    const ins = await pool.query(
+      `INSERT INTO brigadiers (login, password_hash, status, is_admin)
+       VALUES ($1, $2, 'active', true) RETURNING id`,
+      [login.trim(), auth.hashPassword(password)]
+    );
+    const adminId = ins.rows[0].id;
+    // Существующие записи привязываем к админу.
+    await pool.query(
+      'UPDATE work_logs SET brigadier_id = $1 WHERE brigadier_id IS NULL',
+      [adminId]
+    );
+    setAuthCookie(res, auth.signToken(adminId, SESSION_SECRET));
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Setup error:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
