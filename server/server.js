@@ -225,6 +225,72 @@ app.post('/api/setup', async (req, res) => {
   }
 });
 
+// Регистрация — создаёт аккаунт в статусе «ожидает подтверждения».
+app.post('/api/register', async (req, res) => {
+  try {
+    const { login, password } = req.body;
+    if (!login || !login.trim()) {
+      return res.status(400).json({ error: 'Укажи логин' });
+    }
+    if (!password || password.length < 6) {
+      return res.status(400).json({ error: 'Пароль не короче 6 символов' });
+    }
+    const exists = await pool.query(
+      'SELECT 1 FROM brigadiers WHERE LOWER(login) = LOWER($1)',
+      [login.trim()]
+    );
+    if (exists.rows.length > 0) {
+      return res.status(400).json({ error: 'Логин занят' });
+    }
+    await pool.query(
+      "INSERT INTO brigadiers (login, password_hash, status) VALUES ($1, $2, 'pending')",
+      [login.trim(), auth.hashPassword(password)]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Register error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Вход — разрешён только для статуса active.
+app.post('/api/login', async (req, res) => {
+  try {
+    const { login, password } = req.body;
+    if (!login || !password) {
+      return res.status(400).json({ error: 'Укажи логин и пароль' });
+    }
+    const r = await pool.query(
+      'SELECT * FROM brigadiers WHERE LOWER(login) = LOWER($1)',
+      [login.trim()]
+    );
+    const brigadier = r.rows[0];
+    if (!brigadier || !auth.verifyPassword(password, brigadier.password_hash)) {
+      return res.status(401).json({ error: 'Неверный логин или пароль' });
+    }
+    if (brigadier.status === 'pending') {
+      return res.status(403).json({ error: 'Заявка ещё не подтверждена администратором' });
+    }
+    if (brigadier.status === 'disabled') {
+      return res.status(403).json({ error: 'Аккаунт отключён, обратитесь к администратору' });
+    }
+    setAuthCookie(res, auth.signToken(brigadier.id, SESSION_SECRET));
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Login error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/logout', (req, res) => {
+  res.clearCookie('token');
+  res.json({ success: true });
+});
+
+app.get('/api/me', requireAuthMw, (req, res) => {
+  res.json({ login: req.brigadier.login, is_admin: req.brigadier.is_admin });
+});
+
 // Health-check для UptimeRobot и Render
 app.get('/health', (req, res) => res.json({ ok: true }));
 
