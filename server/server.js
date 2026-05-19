@@ -407,6 +407,55 @@ app.post('/api/admin/brigadiers/:id/reset-password', requireAuthMw, auth.require
   }
 });
 
+// --- Этап 2: сотрудники (личный список бригадира) ---
+app.get('/api/employees', requireAuthMw, async (req, res) => {
+  try {
+    const r = await pool.query(
+      'SELECT id, name FROM employees WHERE brigadier_id = $1 ORDER BY name',
+      [req.brigadier.id]
+    );
+    res.json({ employees: r.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/employees', requireAuthMw, async (req, res) => {
+  try {
+    const name = (req.body.name || '').trim();
+    if (!name) {
+      return res.status(400).json({ error: 'Укажи фамилию' });
+    }
+    const ins = await pool.query(
+      'INSERT INTO employees (brigadier_id, name) VALUES ($1, $2) RETURNING id, name',
+      [req.brigadier.id, name]
+    );
+    res.json({ employee: ins.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/employees/:id', requireAuthMw, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const result = await pool.query(
+      'DELETE FROM employees WHERE id = $1 AND brigadier_id = $2 RETURNING id',
+      [id, req.brigadier.id]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Сотрудник не найден' });
+    }
+    await pool.query(
+      'DELETE FROM attendance WHERE employee_id = $1 AND brigadier_id = $2',
+      [id, req.brigadier.id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Health-check для UptimeRobot и Render
 app.get('/health', (req, res) => res.json({ ok: true }));
 
