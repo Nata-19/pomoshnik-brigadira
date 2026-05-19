@@ -1,6 +1,7 @@
 class BrigadeAssistant {
   constructor() {
     this.me = null;
+    this.processing = false; // идёт ли сейчас отправка /api/process
     this.estates = [];
     this.estate = localStorage.getItem('selectedEstate') || '';
     this.quarters = [];
@@ -300,7 +301,7 @@ class BrigadeAssistant {
             </div>
           </div>
 
-          <button onclick="app.process()">Обработать</button>
+          <button id="process-btn" onclick="app.process()">Обработать</button>
 
           <div id="result" class="result" style="display:none;"></div>
         </div>
@@ -356,6 +357,11 @@ class BrigadeAssistant {
   }
 
   async process() {
+    // Защита от двойной отправки: если запрос уже идёт — выходим.
+    // Без неё повторное нажатие «Обработать» (например, пока сервер
+    // «просыпается») создаёт вторую такую же запись в журнале.
+    if (this.processing) return;
+
     const date = document.getElementById('date').value;
     const input = document.getElementById('input').value;
     const quarter = document.getElementById('quarter-sel').value;
@@ -371,6 +377,10 @@ class BrigadeAssistant {
       return;
     }
 
+    const btn = document.getElementById('process-btn');
+    this.processing = true;
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Обрабатываю...'; }
+
     try {
       const response = await fetch('/api/process', {
         method: 'POST',
@@ -382,11 +392,17 @@ class BrigadeAssistant {
 
       if (response.ok) {
         this.showResult(result.report, false, resultDiv);
+        // Очищаем поле — чтобы тот же текст нельзя было отправить повторно.
+        const inputEl = document.getElementById('input');
+        if (inputEl) inputEl.value = '';
       } else {
         this.showResult('❌ ' + result.error, true, resultDiv);
       }
     } catch (error) {
       this.showResult('❌ ' + error.message, true, resultDiv);
+    } finally {
+      this.processing = false;
+      if (btn) { btn.disabled = false; btn.textContent = 'Обработать'; }
     }
   }
 
