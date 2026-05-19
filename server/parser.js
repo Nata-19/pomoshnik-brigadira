@@ -254,6 +254,30 @@ class DataParser {
     return Array.from(rows).sort((a, b) => a - b);
   }
 
+  // Разбирает строку рядов вида "1-5, 9, 11" в отсортированный массив чисел.
+  // Бросает понятную ошибку при неразборчивом вводе.
+  parseRowList(spec) {
+    const rows = new Set();
+    const parts = String(spec == null ? '' : spec).split(',').map(p => p.trim()).filter(Boolean);
+    if (parts.length === 0) {
+      throw new Error('Укажи ряды, например: 1-5, 9, 11');
+    }
+    for (const part of parts) {
+      const range = part.match(/^(\d+)\s*-\s*(\d+)$/);
+      if (range) {
+        const from = parseInt(range[1], 10);
+        const to = parseInt(range[2], 10);
+        if (from > to) throw new Error(`Неверный диапазон рядов: ${part}`);
+        for (let i = from; i <= to; i++) rows.add(i);
+      } else if (/^\d+$/.test(part)) {
+        rows.add(parseInt(part, 10));
+      } else {
+        throw new Error(`Не понял ряды: ${part}`);
+      }
+    }
+    return Array.from(rows).sort((a, b) => a - b);
+  }
+
   getBushesCount(estate, quarter, cell, rows) {
     const edata = this.inventory.estates[estate];
     if (!edata) {
