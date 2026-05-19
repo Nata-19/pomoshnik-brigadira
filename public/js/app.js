@@ -660,7 +660,9 @@ class BrigadeAssistant {
             ${b.status === 'pending' ? `<button class="mini-btn" onclick="app.brigadierAction(${b.id}, 'approve')">Одобрить</button>` : ''}
             ${b.status === 'active' && !b.is_admin ? `<button class="mini-btn delete-btn" onclick="app.brigadierAction(${b.id}, 'disable')">Отключить</button>` : ''}
             ${b.status === 'disabled' ? `<button class="mini-btn" onclick="app.brigadierAction(${b.id}, 'enable')">Включить</button>` : ''}
+            <input class="reset-pw-input" type="text" id="reset-pw-${b.id}" placeholder="Новый пароль" autocomplete="off">
             <button class="mini-btn" onclick="app.resetBrigadierPassword(${b.id})">Сброс пароля</button>
+            <span class="reset-msg" id="reset-msg-${b.id}"></span>
           </div>
         </div>
       `).join('');
@@ -695,8 +697,22 @@ class BrigadeAssistant {
   }
 
   async resetBrigadierPassword(id) {
-    const password = prompt('Новый пароль для этого аккаунта (не короче 6 символов):');
-    if (password === null) return;
+    // Ввод нового пароля — через поле в строке аккаунта, а не prompt():
+    // системное окошко prompt() не показывается в установленном на телефон
+    // приложении (standalone-режим Android Chrome).
+    const inputEl = document.getElementById('reset-pw-' + id);
+    const msgEl = document.getElementById('reset-msg-' + id);
+    const password = inputEl ? inputEl.value : '';
+    const showMsg = (text, ok) => {
+      if (msgEl) {
+        msgEl.textContent = text;
+        msgEl.className = 'reset-msg' + (ok ? ' reset-ok' : '');
+      }
+    };
+    if (!password || password.length < 6) {
+      showMsg('❌ Пароль не короче 6 символов', false);
+      return;
+    }
     try {
       const r = await this.apiFetch('/api/admin/brigadiers/' + id + '/reset-password', {
         method: 'POST',
@@ -705,12 +721,13 @@ class BrigadeAssistant {
       });
       const data = await r.json().catch(() => ({}));
       if (r.ok) {
-        alert('Пароль изменён. Сообщите его бригадиру.');
+        if (inputEl) inputEl.value = '';
+        showMsg('✅ Пароль изменён — сообщите его бригадиру', true);
       } else {
-        alert('Ошибка: ' + (data.error || 'не удалось'));
+        showMsg('❌ ' + (data.error || 'не удалось'), false);
       }
     } catch (e) {
-      alert('Ошибка: ' + e.message);
+      showMsg('❌ ' + e.message, false);
     }
   }
 }

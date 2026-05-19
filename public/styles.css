@@ -376,3 +376,18 @@ button:active {
     font-size: 13px;
     padding: 6px 8px;
 }
+
+.reset-pw-input {
+    margin: 0;
+    font-size: 13px;
+    padding: 6px 8px;
+}
+
+.reset-msg {
+    font-size: 12px;
+    color: #c0392b;
+}
+
+.reset-msg.reset-ok {
+    color: #229954;
+}
