@@ -33,7 +33,8 @@
         id SERIAL PRIMARY KEY,
         brigadier_id INTEGER NOT NULL,
         name TEXT NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (brigadier_id, name)
       )
     `);
     await pool.query(`
@@ -100,10 +101,13 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
       if (range) {
         const from = parseInt(range[1], 10);
         const to = parseInt(range[2], 10);
+        if (from < 1) throw new Error(`Номер ряда начинается с 1: ${part}`);
         if (from > to) throw new Error(`Неверный диапазон рядов: ${part}`);
         for (let i = from; i <= to; i++) rows.add(i);
       } else if (/^\d+$/.test(part)) {
-        rows.add(parseInt(part, 10));
+        const n = parseInt(part, 10);
+        if (n < 1) throw new Error(`Номер ряда начинается с 1: ${part}`);
+        rows.add(n);
       } else {
         throw new Error(`Не понял ряды: ${part}`);
       }
@@ -134,10 +138,14 @@ let t = false; try { p.parseRowList('abc'); } catch (e) { t = true; }
 console.log('bad input     =>', t ? 'OK' : 'FAIL');
 t = false; try { p.parseRowList(''); } catch (e) { t = true; }
 console.log('empty         =>', t ? 'OK' : 'FAIL');
+t = false; try { p.parseRowList('0'); } catch (e) { t = true; }
+console.log('zero single   =>', t ? 'OK' : 'FAIL');
+t = false; try { p.parseRowList('0-3'); } catch (e) { t = true; }
+console.log('zero range    =>', t ? 'OK' : 'FAIL');
 "
 ```
 
-Expected: пять строк, все заканчиваются на `OK`.
+Expected: семь строк, все заканчиваются на `OK`.
 
 - [ ] **Step 4: Коммит**
 
@@ -178,6 +186,13 @@ app.post('/api/employees', requireAuthMw, async (req, res) => {
     const name = (req.body.name || '').trim();
     if (!name) {
       return res.status(400).json({ error: 'Укажи фамилию' });
+    }
+    const exists = await pool.query(
+      'SELECT 1 FROM employees WHERE brigadier_id = $1 AND name = $2',
+      [req.brigadier.id, name]
+    );
+    if (exists.rows.length > 0) {
+      return res.status(400).json({ error: 'Такой сотрудник уже есть' });
     }
     const ins = await pool.query(
       'INSERT INTO employees (brigadier_id, name) VALUES ($1, $2) RETURNING id, name',
@@ -1410,3 +1425,4 @@ git push
 - Старый `POST /api/process` и текстовый разбор в `parser.js` остаются в коде, но клиентом больше не вызываются — трогать их не нужно.
 - Коммиты заканчиваются трейлером `Co-Authored-By`, как в недавнем `git log`.
 - Репозиторий **публичный** — не коммить пароли, логины, секреты, фамилии, названия Excel-файлов.
+- Задачи 1-3 уточнены после code-review: `employees` получил `UNIQUE (brigadier_id, name)`, `POST /api/employees` отклоняет дубль фамилии, `parseRowList` отклоняет номер ряда меньше 1. Код блоков выше уже учитывает эти правки.

@@ -95,7 +95,8 @@ const getSecret = () => SESSION_SECRET;
         id SERIAL PRIMARY KEY,
         brigadier_id INTEGER NOT NULL,
         name TEXT NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (brigadier_id, name)
       )
     `);
     await pool.query(`
@@ -425,6 +426,13 @@ app.post('/api/employees', requireAuthMw, async (req, res) => {
     const name = (req.body.name || '').trim();
     if (!name) {
       return res.status(400).json({ error: 'Укажи фамилию' });
+    }
+    const exists = await pool.query(
+      'SELECT 1 FROM employees WHERE brigadier_id = $1 AND name = $2',
+      [req.brigadier.id, name]
+    );
+    if (exists.rows.length > 0) {
+      return res.status(400).json({ error: 'Такой сотрудник уже есть' });
     }
     const ins = await pool.query(
       'INSERT INTO employees (brigadier_id, name) VALUES ($1, $2) RETURNING id, name',

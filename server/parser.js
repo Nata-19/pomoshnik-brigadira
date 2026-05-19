@@ -267,10 +267,13 @@ class DataParser {
       if (range) {
         const from = parseInt(range[1], 10);
         const to = parseInt(range[2], 10);
+        if (from < 1) throw new Error(`Номер ряда начинается с 1: ${part}`);
         if (from > to) throw new Error(`Неверный диапазон рядов: ${part}`);
         for (let i = from; i <= to; i++) rows.add(i);
       } else if (/^\d+$/.test(part)) {
-        rows.add(parseInt(part, 10));
+        const n = parseInt(part, 10);
+        if (n < 1) throw new Error(`Номер ряда начинается с 1: ${part}`);
+        rows.add(n);
       } else {
         throw new Error(`Не понял ряды: ${part}`);
       }
