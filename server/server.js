@@ -86,6 +86,41 @@ const getSecret = () => SESSION_SECRET;
         [SESSION_SECRET]
       );
     }
+    // --- Этап 2: списки и колонки для структурированного ввода ---
+    await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS work_type TEXT NOT NULL DEFAULT ''`);
+    await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS measure_mode TEXT NOT NULL DEFAULT 'rows_bushes'`);
+    await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS hours INTEGER`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS employees (
+        id SERIAL PRIMARY KEY,
+        brigadier_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS work_types (
+        id SERIAL PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS attendance (
+        brigadier_id INTEGER NOT NULL,
+        date TEXT NOT NULL,
+        employee_id INTEGER NOT NULL,
+        PRIMARY KEY (brigadier_id, date, employee_id)
+      )
+    `);
+    // Заполняем общий список видов работ основными — один раз, если он пуст.
+    const wtCount = await pool.query('SELECT COUNT(*)::int AS n FROM work_types');
+    if (wtCount.rows[0].n === 0) {
+      const basics = ['Обрезка', 'Подвязка', 'Опрыскивание', 'Уборка территории', 'Подготовка саженцев'];
+      for (const name of basics) {
+        await pool.query('INSERT INTO work_types (name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [name]);
+      }
+    }
     console.log('✅ Connected to Postgres');
   } catch (err) {
     console.error('❌ Postgres init failed:', err.message);
