@@ -159,33 +159,17 @@ class BrigadeAssistant {
     }
     this.cellsByQuarter = {};
     await this.loadQuarters();
-    // Перерисовываем выпадающие списки кварталов/клеток
-    const qSel = document.getElementById('quarter-sel');
-    if (qSel) {
-      qSel.innerHTML = '<option value="">Квартал...</option>' +
-        this.quarters.map(q => `<option value="${q.id}">${this.escapeHtml(q.name)}</option>`).join('');
-    }
-    const cSel = document.getElementById('cell-sel');
-    if (cSel) cSel.innerHTML = '<option value="">Клетка...</option>';
+    // Сбрасываем контекст и записи журнала — они привязаны к хозяйству.
+    this.ctxQuarter = '';
+    this.ctxCell = '';
+    this.selectedEmployeeId = null;
+    await this.loadTodayEntries(this.inputDate);
+    this.renderInput();
     // Подсвечиваем текущее хозяйство в бейдже
     const badge = document.getElementById('estate-badge');
     if (badge) {
       const est = this.estates.find(e => e.id === this.estate);
       badge.textContent = est ? est.name : '';
-    }
-  }
-
-  async onQuarterChange() {
-    const qSel = document.getElementById('quarter-sel');
-    const cSel = document.getElementById('cell-sel');
-    cSel.innerHTML = '<option value="">Клетка...</option>';
-    if (!qSel.value) return;
-    const cells = await this.loadCells(qSel.value);
-    for (const c of cells) {
-      const opt = document.createElement('option');
-      opt.value = c;
-      opt.textContent = 'Клетка ' + c;
-      cSel.appendChild(opt);
     }
   }
 
