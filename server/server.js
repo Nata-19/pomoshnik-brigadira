@@ -551,7 +551,13 @@ app.post('/api/attendance', requireAuthMw, async (req, res) => {
 app.delete('/api/attendance', requireAuthMw, async (req, res) => {
   try {
     const { date, employee_id } = req.body;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
+    }
     const eid = parseInt(employee_id, 10);
+    if (!Number.isInteger(eid)) {
+      return res.status(400).json({ error: 'Неверный id сотрудника' });
+    }
     await pool.query(
       'DELETE FROM attendance WHERE brigadier_id = $1 AND date = $2 AND employee_id = $3',
       [req.brigadier.id, date, eid]
