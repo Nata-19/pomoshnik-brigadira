@@ -55,7 +55,7 @@ function extractCells(sheet, opts) {
     const row = data[i];
     if (!row) continue;
     const rowNum = row[opts.rowCol];
-    if (typeof rowNum !== 'number' || !Number.isInteger(rowNum) || rowNum <= 0) continue;
+    if (typeof rowNum !== 'number' || !Number.isInteger(rowNum) || rowNum < 0) continue;
 
     for (const [cellNum, colIdx] of Object.entries(opts.cellMap)) {
       const bushes = row[colIdx];
@@ -100,7 +100,30 @@ for (const q of config.quarters) {
   if (!inventory.estates[estateId]) {
     inventory.estates[estateId] = { name: estatesByID[estateId].name, quarters: {} };
   }
-  inventory.estates[estateId].quarters[q.quarter] = { name: q.name, cells };
+  const existing = inventory.estates[estateId].quarters[q.quarter];
+  if (!existing) {
+    inventory.estates[estateId].quarters[q.quarter] = { name: q.name, cells };
+  } else {
+    // Тот же quarter встречается повторно (другой год посадки / другой файл) —
+    // сливаем клетки и ряды. Конфликтующий номер ряда в одной клетке —
+    // ошибка, кричим и оставляем первый.
+    for (const [cellId, rows] of Object.entries(cells)) {
+      if (!existing.cells[cellId]) {
+        existing.cells[cellId] = rows;
+        continue;
+      }
+      const existingRowNums = new Set(existing.cells[cellId].map(r => r.row));
+      for (const r of rows) {
+        if (existingRowNums.has(r.row)) {
+          console.warn(`⚠ Кв.${q.quarter} (${estateId}), клетка ${cellId}: ряд ${r.row} уже есть из другого файла — оставляю первый`);
+        } else {
+          existing.cells[cellId].push(r);
+          existingRowNums.add(r.row);
+        }
+      }
+      existing.cells[cellId].sort((a, b) => a.row - b.row);
+    }
+  }
 }
 
 console.log('=== Итоги парсинга ===');
