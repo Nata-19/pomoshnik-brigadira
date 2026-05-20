@@ -503,6 +503,65 @@ app.post('/api/work-types', requireAuthMw, async (req, res) => {
   }
 });
 
+// --- Этап 2: явка (кто сегодня на работе) ---
+app.get('/api/attendance', requireAuthMw, async (req, res) => {
+  try {
+    const date = req.query.date;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
+    }
+    const r = await pool.query(
+      `SELECT a.employee_id, e.name
+       FROM attendance a JOIN employees e ON e.id = a.employee_id
+       WHERE a.brigadier_id = $1 AND a.date = $2
+       ORDER BY e.name`,
+      [req.brigadier.id, date]
+    );
+    res.json({ present: r.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/attendance', requireAuthMw, async (req, res) => {
+  try {
+    const { date, employee_id } = req.body;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
+    }
+    const eid = parseInt(employee_id, 10);
+    const own = await pool.query(
+      'SELECT 1 FROM employees WHERE id = $1 AND brigadier_id = $2',
+      [eid, req.brigadier.id]
+    );
+    if (own.rows.length === 0) {
+      return res.status(404).json({ error: 'Сотрудник не найден' });
+    }
+    await pool.query(
+      `INSERT INTO attendance (brigadier_id, date, employee_id) VALUES ($1, $2, $3)
+       ON CONFLICT DO NOTHING`,
+      [req.brigadier.id, date, eid]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/attendance', requireAuthMw, async (req, res) => {
+  try {
+    const { date, employee_id } = req.body;
+    const eid = parseInt(employee_id, 10);
+    await pool.query(
+      'DELETE FROM attendance WHERE brigadier_id = $1 AND date = $2 AND employee_id = $3',
+      [req.brigadier.id, date, eid]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Health-check для UptimeRobot и Render
 app.get('/health', (req, res) => res.json({ ok: true }));
 
