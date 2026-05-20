@@ -451,6 +451,28 @@ app.post('/api/logs', requireAuthMw, async (req, res) => {
       }
     }
 
+    // Защита от непреднамеренных дублей: если ровно такая же запись была
+    // создана в последние 10 секунд — отказываем. Случайный повторный тап
+    // через несколько секунд после ответа не пройдёт, а намеренная одинаковая
+    // запись позже этого окна — пройдёт.
+    const dup = await pool.query(
+      `SELECT id FROM work_logs
+       WHERE brigadier_id = $1 AND date = $2 AND estate_id = $3
+         AND quarter = $4 AND cell = $5 AND employee = $6
+         AND work_type = $7 AND measure_mode = $8
+         AND COALESCE(rows, '') = COALESCE($9, '')
+         AND COALESCE(hours, -1) = COALESCE($10, -1)
+         AND created_at > NOW() - INTERVAL '10 seconds'
+       LIMIT 1`,
+      [req.brigadier.id, date, estate,
+       quarter ? String(quarter) : '', cell ? String(cell) : '',
+       employee.trim(), work_type.trim(), measure_mode,
+       rowsStr, hoursVal]
+    );
+    if (dup.rows.length > 0) {
+      return res.status(409).json({ error: 'Такая же запись только что добавлена' });
+    }
+
     const ins = await pool.query(
       `INSERT INTO work_logs
         (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, work_type, measure_mode, hours)
@@ -1426,3 +1448,4 @@ git push
 - Коммиты заканчиваются трейлером `Co-Authored-By`, как в недавнем `git log`.
 - Репозиторий **публичный** — не коммить пароли, логины, секреты, фамилии, названия Excel-файлов.
 - Задачи 1-3 уточнены после code-review: `employees` получил `UNIQUE (brigadier_id, name)`, `POST /api/employees` отклоняет дубль фамилии, `parseRowList` отклоняет номер ряда меньше 1. Код блоков выше уже учитывает эти правки.
+- В `POST /api/logs` встроена защита от непреднамеренного повтора: запись с теми же ключевыми полями, созданная в последние 10 секунд, отклоняется (HTTP 409 «Такая же запись только что добавлена»). Намеренный одинаковый ввод позже окна — проходит. Хард-удаление в `DELETE /api/logs/:id` снимает блокировку, если пользователь удалил предыдущую и тут же ввёл заново.
