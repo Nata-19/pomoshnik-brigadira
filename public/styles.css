@@ -299,7 +299,7 @@ button:active {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 20px;
+    gap: 30px;
     margin-bottom: 18px;
 }
 
@@ -380,9 +380,9 @@ button:active {
 }
 
 .chip-select:valid {
-    background: #2e7d32;
+    background: #6ab0e3;
     color: #fff;
-    border-color: #2e7d32;
+    border-color: #4a8fc2;
 }
 
 /* Поле «новый вид работ» + зелёная кнопка-плашка «+ вид работ». */
@@ -395,16 +395,16 @@ button:active {
 .add-inline .mini-btn {
     padding: 7px 12px;
     border-radius: 14px;
-    background: #2e7d32;
+    background: #6ab0e3;
     color: #fff;
     font-size: 13px;
-    border: 1px solid #2e7d32;
+    border: 1px solid #4a8fc2;
     font-weight: 500;
     white-space: nowrap;
 }
 
 .add-inline .mini-btn:hover {
-    background: #266b2a;
+    background: #4a8fc2;
 }
 
 .logout-btn {
@@ -485,9 +485,9 @@ button:active {
 }
 
 .mode-btn.active {
-    background: #2e7d32;
+    background: #6ab0e3;
     color: #fff;
-    border-color: #2e7d32;
+    border-color: #4a8fc2;
 }
 
 .add-inline {
@@ -527,7 +527,7 @@ button:active {
 }
 
 .roster-row.present {
-    background: #f1f8f1;
+    background: #eaf3fa;
 }
 
 .roster-name {
@@ -563,9 +563,9 @@ button:active {
 }
 
 .chip.on {
-    background: #2e7d32;
+    background: #6ab0e3;
     color: #fff;
-    border-color: #2e7d32;
+    border-color: #4a8fc2;
 }
 
 .chips-empty {
@@ -580,7 +580,7 @@ button:active {
 
 .entry-card {
     border: 1px solid #e2e2e2;
-    border-left: 4px solid #2e7d32;
+    border-left: 4px solid #6ab0e3;
     border-radius: 8px;
     padding: 9px 11px;
     margin: 7px 0;

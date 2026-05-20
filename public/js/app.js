@@ -296,6 +296,10 @@ class BrigadeAssistant {
           </div>
         </div>
 
+        <div class="date-row">
+          <input type="date" id="i2-date" class="date-chip" value="${this.inputDate}" onchange="app.onInputDateChange()">
+        </div>
+
         <div class="tabs">
           <button class="tab-button active" onclick="app.switchTab(event, 'input')">Ввод данных</button>
           <button class="tab-button" onclick="app.switchTab(event, 'report')">Отчет за период</button>
@@ -363,10 +367,6 @@ class BrigadeAssistant {
       `<button class="mode-btn ${this.measureMode === m ? 'active' : ''}" onclick="app.setMeasureMode('${m}')">${label}</button>`;
     const selName = this.selectedName();
     tab.innerHTML = `
-      <div class="date-row">
-        <input type="date" id="i2-date" class="date-chip" value="${this.inputDate}" onchange="app.onInputDateChange()">
-      </div>
-
       <div class="ctx-block">
         <div class="block-label">Контекст</div>
         <div class="chips-row">
