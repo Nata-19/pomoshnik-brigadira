@@ -200,6 +200,9 @@ app.post('/api/employees', requireAuthMw, async (req, res) => {
     );
     res.json({ employee: ins.rows[0] });
   } catch (err) {
+    if (err.code === '23505') {
+      return res.status(400).json({ error: 'Такой сотрудник уже есть' });
+    }
     res.status(500).json({ error: err.message });
   }
 });
@@ -281,6 +284,9 @@ app.post('/api/work-types', requireAuthMw, async (req, res) => {
     );
     res.json({ work_type: ins.rows[0] });
   } catch (err) {
+    if (err.code === '23505') {
+      return res.status(400).json({ error: 'Такой вид работ уже есть' });
+    }
     res.status(500).json({ error: err.message });
   }
 });
