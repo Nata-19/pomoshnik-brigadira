@@ -464,6 +464,39 @@ app.delete('/api/employees/:id', requireAuthMw, async (req, res) => {
   }
 });
 
+// --- Этап 2: виды работ (общий список) ---
+app.get('/api/work-types', requireAuthMw, async (req, res) => {
+  try {
+    const r = await pool.query('SELECT id, name FROM work_types ORDER BY name');
+    res.json({ work_types: r.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/work-types', requireAuthMw, async (req, res) => {
+  try {
+    const name = (req.body.name || '').trim();
+    if (!name) {
+      return res.status(400).json({ error: 'Укажи название вида работ' });
+    }
+    const exists = await pool.query(
+      'SELECT 1 FROM work_types WHERE LOWER(name) = LOWER($1)',
+      [name]
+    );
+    if (exists.rows.length > 0) {
+      return res.status(400).json({ error: 'Такой вид работ уже есть' });
+    }
+    const ins = await pool.query(
+      'INSERT INTO work_types (name) VALUES ($1) RETURNING id, name',
+      [name]
+    );
+    res.json({ work_type: ins.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Health-check для UptimeRobot и Render
 app.get('/health', (req, res) => res.json({ ok: true }));
 
