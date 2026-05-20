@@ -1,11 +1,23 @@
 class BrigadeAssistant {
   constructor() {
     this.me = null;
-    this.processing = false; // идёт ли сейчас отправка /api/process
     this.estates = [];
     this.estate = localStorage.getItem('selectedEstate') || '';
     this.quarters = [];
     this.cellsByQuarter = {}; // кэш клеток по (estate|quarter)
+    // Этап 2 — структурированный ввод
+    this.employees = [];          // [{id, name}] — полный список бригады
+    this.workTypes = [];          // [{id, name}] — общий список видов работ
+    this.present = [];            // [{employee_id, name}] — отмеченные сегодня
+    this.entries = [];            // записи журнала за выбранную дату
+    this.inputDate = this.getTodayDate();
+    this.ctxQuarter = '';         // «держащийся» контекст
+    this.ctxCell = '';
+    this.ctxWorkType = '';
+    this.measureMode = 'rows_bushes';
+    this.selectedEmployeeId = null;
+    this.rosterOpen = false;
+    this.adding = false;          // защита от двойного «Добавить»
     this.init();
   }
 
@@ -39,6 +51,10 @@ class BrigadeAssistant {
     if (this.estate) {
       await this.loadQuarters();
     }
+    await this.loadEmployees();
+    await this.loadWorkTypes();
+    await this.loadAttendance(this.inputDate);
+    await this.loadTodayEntries(this.inputDate);
     this.render();
   }
 
@@ -88,6 +104,48 @@ class BrigadeAssistant {
       return cells;
     } catch (e) {
       return [];
+    }
+  }
+
+  async loadEmployees() {
+    try {
+      const r = await this.apiFetch('/api/employees');
+      const data = await r.json();
+      this.employees = data.employees || [];
+    } catch (e) {
+      this.employees = [];
+    }
+  }
+
+  async loadWorkTypes() {
+    try {
+      const r = await this.apiFetch('/api/work-types');
+      const data = await r.json();
+      this.workTypes = data.work_types || [];
+    } catch (e) {
+      this.workTypes = [];
+    }
+  }
+
+  async loadAttendance(date) {
+    try {
+      const r = await this.apiFetch('/api/attendance?date=' + encodeURIComponent(date));
+      const data = await r.json();
+      this.present = data.present || [];
+    } catch (e) {
+      this.present = [];
+    }
+  }
+
+  async loadTodayEntries(date) {
+    if (!this.estate) { this.entries = []; return; }
+    try {
+      const r = await this.apiFetch('/api/logs?date=' + encodeURIComponent(date) +
+        '&estate=' + encodeURIComponent(this.estate));
+      const data = await r.json();
+      this.entries = (r.ok && data.logs) ? data.logs : [];
+    } catch (e) {
+      this.entries = [];
     }
   }
 
