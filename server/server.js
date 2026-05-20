@@ -673,14 +673,14 @@ app.get('/api/logs', requireAuthMw, async (req, res) => {
         return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
       }
       result = await pool.query(
-        `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, created_at
+        `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, created_at
          FROM work_logs WHERE date = $1 AND estate_id = $2 AND brigadier_id = $3
          ORDER BY created_at DESC`,
         [date, estate, req.brigadier.id]
       );
     } else if (from && to) {
       result = await pool.query(
-        `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, created_at
+        `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, created_at
          FROM work_logs WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND brigadier_id = $4
          ORDER BY date DESC, created_at DESC`,
         [from, to, estate, req.brigadier.id]
@@ -734,10 +734,10 @@ app.get('/api/report', requireAuthMw, async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT date, estate_id, quarter, cell, employee, rows, bushes
+      `SELECT date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours
        FROM work_logs
        WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND brigadier_id = $4
-       ORDER BY employee, quarter::int, cell::int, date`,
+       ORDER BY employee, work_type, date`,
       [from, to, estate, req.brigadier.id]
     );
 
@@ -747,43 +747,63 @@ app.get('/api/report', requireAuthMw, async (req, res) => {
       });
     }
 
-    // Группируем: сотрудник → "кв-клетка" → {rows: число, bushes: число}
-    const byEmployee = {};
+    // Группируем: сотрудник → вид работ → "квартал|клетка" → записи.
+    const byEmp = {};
     for (const r of result.rows) {
-      if (!byEmployee[r.employee]) byEmployee[r.employee] = {};
-      const key = `${r.quarter}|${r.cell}`;
-      if (!byEmployee[r.employee][key]) {
-        byEmployee[r.employee][key] = { quarter: r.quarter, cell: r.cell, rows: 0, bushes: 0 };
-      }
-      // rows хранятся как "1,2,3" — считаем количество элементов
-      const rowCount = String(r.rows).split(',').filter(x => x.trim()).length;
-      byEmployee[r.employee][key].rows += rowCount;
-      byEmployee[r.employee][key].bushes += r.bushes;
+      const wt = r.work_type && r.work_type.trim() ? r.work_type : '(без вида работ)';
+      if (!byEmp[r.employee]) byEmp[r.employee] = {};
+      if (!byEmp[r.employee][wt]) byEmp[r.employee][wt] = [];
+      byEmp[r.employee][wt].push(r);
     }
 
-    // Формируем текст
-    let report = `Отчёт за период: ${from} — ${to}\n\n`;
-    let totalRows = 0;
-    let totalBushes = 0;
-    const employees = Object.keys(byEmployee).sort((a, b) => a.localeCompare(b, 'ru'));
+    const rowCountOf = (r) => String(r.rows || '').split(',').filter(x => x.trim()).length;
+    const newSlot = () => ({ rows: 0, bushes: 0, hours: 0, hasRows: false, hasBushes: false, hasHours: false });
+    const unitText = (s) => {
+      const p = [];
+      if (s.hasRows) p.push(`${s.rows} рядов`);
+      if (s.hasBushes) p.push(`${s.bushes} кустов`);
+      if (s.hasHours) p.push(`${s.hours} часов`);
+      return p.join(', ');
+    };
+    const addRec = (slot, r) => {
+      if (r.measure_mode === 'hours') {
+        slot.hours += r.hours || 0;
+        slot.hasHours = true;
+      } else {
+        slot.rows += rowCountOf(r);
+        slot.hasRows = true;
+        if (r.measure_mode === 'rows_bushes') {
+          slot.bushes += r.bushes || 0;
+          slot.hasBushes = true;
+        }
+      }
+    };
 
+    let report = `Отчёт за период: ${from} — ${to}\n\n`;
+    const employees = Object.keys(byEmp).sort((a, b) => a.localeCompare(b, 'ru'));
     for (const name of employees) {
       report += `${name}\n`;
-      let empRows = 0;
-      let empBushes = 0;
-      const cells = Object.values(byEmployee[name])
-        .sort((a, b) => (+a.quarter - +b.quarter) || (+a.cell - +b.cell));
-      for (const c of cells) {
-        report += `  Кв.${c.quarter}, кл.${c.cell} — ${c.rows} рядов, ${c.bushes} кустов\n`;
-        empRows += c.rows;
-        empBushes += c.bushes;
+      const workTypes = Object.keys(byEmp[name]).sort((a, b) => a.localeCompare(b, 'ru'));
+      for (const wt of workTypes) {
+        report += `  ${wt}\n`;
+        const byCell = {};
+        const wtTotal = newSlot();
+        for (const r of byEmp[name][wt]) {
+          const ck = (r.quarter || '') + '|' + (r.cell || '');
+          if (!byCell[ck]) byCell[ck] = { quarter: r.quarter, cell: r.cell, slot: newSlot() };
+          addRec(byCell[ck].slot, r);
+          addRec(wtTotal, r);
+        }
+        for (const ck of Object.keys(byCell)) {
+          const c = byCell[ck];
+          const where = c.quarter ? `Кв.${c.quarter}, кл.${c.cell}` : 'без клетки';
+          report += `    ${where} — ${unitText(c.slot)}\n`;
+        }
+        report += `    Итого: ${unitText(wtTotal)}\n`;
       }
-      report += `  Итого: ${empRows} рядов, ${empBushes} кустов\n\n`;
-      totalRows += empRows;
-      totalBushes += empBushes;
+      report += `\n`;
     }
-
-    report += `ВСЕГО ЗА ПЕРИОД:\nРяды: ${totalRows}\nКусты: ${totalBushes}`;
+    report += 'Ряды, кусты и часы суммируются раздельно — каждая единица своя.';
     res.json({ report });
   } catch (error) {
     console.error('Report error:', error);
