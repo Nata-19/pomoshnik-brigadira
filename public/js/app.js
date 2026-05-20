@@ -751,15 +751,28 @@ class BrigadeAssistant {
       const sorted = data.logs.slice().sort((a, b) =>
         (+a.quarter - +b.quarter) || (+a.cell - +b.cell) || a.employee.localeCompare(b.employee, 'ru')
       );
-      list.innerHTML = sorted.map(log => `
+      list.innerHTML = sorted.map(log => {
+        let measure;
+        if (log.measure_mode === 'hours') {
+          measure = `${log.hours} часов`;
+        } else {
+          const rowCount = String(log.rows || '').split(',').filter(x => x.trim()).length;
+          measure = `ряды [${this.escapeHtml(log.rows)}] · ${rowCount} рядов`;
+          if (log.measure_mode === 'rows_bushes') measure += ` · ${log.bushes} кустов`;
+        }
+        const place = (log.measure_mode === 'hours' && !log.quarter)
+          ? '' : `Кв.${this.escapeHtml(log.quarter)}, кл.${this.escapeHtml(log.cell)} · `;
+        return `
         <div class="log-entry">
           <div class="log-info">
             <div class="log-employee">${this.escapeHtml(log.employee)}</div>
-            <div class="log-meta">Кв.${log.quarter}, кл.${log.cell} · ряды [${this.escapeHtml(log.rows)}] · ${log.bushes} кустов</div>
+            <div class="log-meta">${this.escapeHtml(log.work_type || '')}</div>
+            <div class="log-meta">${place}${measure}</div>
           </div>
           <button class="delete-btn" onclick="app.deleteLog(${log.id})">Удалить</button>
         </div>
-      `).join('');
+      `;
+      }).join('');
     } catch (e) {
       list.innerHTML = '<p style="color:#c0392b;padding:10px;">❌ ' + e.message + '</p>';
     }
