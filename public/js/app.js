@@ -331,38 +331,7 @@ class BrigadeAssistant {
           ${this.me && this.me.is_admin ? `<button class="tab-button" onclick="app.switchTab(event, 'admin'); app.loadBrigadiers()">Админ</button>` : ''}
         </div>
 
-        <div class="tab-content active" id="input-tab">
-          <div class="form-group">
-            <label>Дата (YYYY-MM-DD):</label>
-            <input type="date" id="date" value="${this.getTodayDate()}">
-          </div>
-
-          <div class="form-group">
-            <label>Квартал и клетка (по умолчанию — для строк без явного указания):</label>
-            <div class="row-2cols">
-              <select id="quarter-sel" onchange="app.onQuarterChange()">
-                <option value="">Квартал...</option>
-                ${this.quarters.map(q => `<option value="${q.id}">${q.name}</option>`).join('')}
-              </select>
-              <select id="cell-sel">
-                <option value="">Клетка...</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label>Сотрудники (голосом или вручную):</label>
-            <textarea id="input" placeholder="Иванов с 1 по 5; Лена 6, 7&#10;Петров с 8 по 10&#10;&#10;Голосом: «иванов с первого по пятый», (пауза) «лена шестой седьмой»"></textarea>
-            <div class="voice-row">
-              <button type="button" id="voice-btn" onclick="app.toggleVoice()" class="voice-btn">🎤 Голос</button>
-              <span id="voice-status"></span>
-            </div>
-          </div>
-
-          <button id="process-btn" onclick="app.process()">Обработать</button>
-
-          <div id="result" class="result" style="display:none;"></div>
-        </div>
+        <div class="tab-content active" id="input-tab"></div>
 
         <div class="tab-content" id="report-tab">
           <div class="form-group">
@@ -398,7 +367,7 @@ class BrigadeAssistant {
         </div>` : ''}
       </div>
     `;
-    this.initVoiceInput();
+    this.renderInput();
   }
 
   switchTab(evt, tab) {
@@ -414,53 +383,337 @@ class BrigadeAssistant {
     return today.toISOString().split('T')[0];
   }
 
-  async process() {
-    // Защита от двойной отправки: если запрос уже идёт — выходим.
-    // Без неё повторное нажатие «Обработать» (например, пока сервер
-    // «просыпается») создаёт вторую такую же запись в журнале.
-    if (this.processing) return;
+  // Собирает HTML вкладки «Ввод данных» из текущего состояния.
+  renderInput() {
+    const tab = document.getElementById('input-tab');
+    if (!tab) return;
+    const modeBtn = (m, label) =>
+      `<button class="mode-btn ${this.measureMode === m ? 'active' : ''}" onclick="app.setMeasureMode('${m}')">${label}</button>`;
+    const selName = this.selectedName();
+    tab.innerHTML = `
+      <div class="form-group">
+        <label>Дата:</label>
+        <input type="date" id="i2-date" value="${this.inputDate}" onchange="app.onInputDateChange()">
+      </div>
 
-    const date = document.getElementById('date').value;
-    const input = document.getElementById('input').value;
-    const quarter = document.getElementById('quarter-sel').value;
-    const cell = document.getElementById('cell-sel').value;
-    const resultDiv = document.getElementById('result');
+      <div class="ctx-block">
+        <div class="block-label">Контекст</div>
+        <div class="row-2cols">
+          <select id="i2-quarter" onchange="app.onI2QuarterChange()">
+            <option value="">Квартал...</option>
+            ${this.quarters.map(q => `<option value="${q.id}" ${q.id === this.ctxQuarter ? 'selected' : ''}>${this.escapeHtml(q.name)}</option>`).join('')}
+          </select>
+          <select id="i2-cell" onchange="app.onI2CellChange()">
+            <option value="">Клетка...</option>
+          </select>
+        </div>
+        <select id="i2-worktype" onchange="app.onI2WorkTypeChange()">
+          <option value="">Вид работ...</option>
+          ${this.workTypes.map(w => `<option value="${this.escapeHtml(w.name)}" ${w.name === this.ctxWorkType ? 'selected' : ''}>${this.escapeHtml(w.name)}</option>`).join('')}
+        </select>
+        <div class="add-inline">
+          <input type="text" id="i2-new-worktype" placeholder="Новый вид работ" autocomplete="off">
+          <button class="mini-btn" onclick="app.addWorkType()">+ вид работ</button>
+        </div>
+        <div class="block-label">Как считать:</div>
+        <div class="mode-row">
+          ${modeBtn('rows_bushes', 'Ряды + кусты')}
+          ${modeBtn('rows_only', 'Только ряды')}
+          ${modeBtn('hours', 'Только часы')}
+        </div>
+      </div>
 
-    if (!this.estate) {
-      this.showResult('❌ Сначала выбери хозяйство', true, resultDiv);
+      <div class="ctx-block">
+        <div class="block-label">Сегодня на работе</div>
+        <button class="roster-toggle" onclick="app.toggleRoster()">
+          ${this.rosterOpen ? 'Скрыть список бригады ▲' : 'Выбрать рабочих из бригады ▾'}
+        </button>
+        ${this.rosterOpen ? this.renderRosterHtml() : ''}
+        <div class="chips">
+          ${this.present.length === 0
+            ? '<span class="chips-empty">Пока никто не отмечен</span>'
+            : this.present.map(p =>
+                `<span class="chip ${p.employee_id === this.selectedEmployeeId ? 'on' : ''}" onclick="app.selectWorker(${p.employee_id})">${this.escapeHtml(p.name)}</span>`
+              ).join('')}
+        </div>
+      </div>
+
+      <div class="ctx-block">
+        <div class="block-label">Добавить запись</div>
+        <div class="sel-emp">Сотрудник: <b>${selName ? this.escapeHtml(selName) : '— выбери плашку выше'}</b></div>
+        ${this.measureMode === 'hours'
+          ? '<div class="form-group"><label>Часы:</label><input type="number" id="i2-hours" min="1" inputmode="numeric"></div>'
+          : '<div class="form-group"><label>Ряды (например: 1-5, 9, 11):</label><input type="text" id="i2-rows" inputmode="numeric"></div>'}
+        <button id="i2-add-btn" onclick="app.addEntry()">Добавить</button>
+        <div id="i2-msg" class="auth-msg"></div>
+      </div>
+
+      <div class="ctx-block">
+        <div class="block-label">Записи за ${this.escapeHtml(this.inputDate)}</div>
+        <div id="i2-entries">${this.renderEntriesHtml()}</div>
+      </div>
+    `;
+    this.refreshI2Cells();
+  }
+
+  // Имя выбранного сотрудника (по id из this.present).
+  selectedName() {
+    const p = this.present.find(x => x.employee_id === this.selectedEmployeeId);
+    return p ? p.name : '';
+  }
+
+  // HTML выпадающего списка всей бригады с отметками явки.
+  renderRosterHtml() {
+    const presentIds = new Set(this.present.map(p => p.employee_id));
+    const rows = this.employees.map(e => `
+      <div class="roster-row ${presentIds.has(e.id) ? 'present' : ''}">
+        <span class="roster-name" onclick="app.togglePresent(${e.id})">${presentIds.has(e.id) ? '☑️' : '⬜'} ${this.escapeHtml(e.name)}</span>
+        <span class="roster-del" onclick="app.deleteEmployee(${e.id})">✕</span>
+      </div>
+    `).join('');
+    return `
+      <div class="roster">
+        ${rows || '<div class="roster-row">В списке бригады пока никого нет.</div>'}
+        <div class="add-inline roster-add">
+          <input type="text" id="i2-new-emp" placeholder="Фамилия нового" autocomplete="off">
+          <button class="mini-btn" onclick="app.addEmployee()">+ добавить</button>
+        </div>
+      </div>
+    `;
+  }
+
+  // HTML карточек записей за выбранную дату.
+  renderEntriesHtml() {
+    if (!this.entries || this.entries.length === 0) {
+      return '<p class="chips-empty">Записей пока нет.</p>';
+    }
+    return this.entries.map(log => {
+      let measure;
+      if (log.measure_mode === 'hours') {
+        measure = `${log.hours} часов`;
+      } else {
+        const rowCount = String(log.rows || '').split(',').filter(x => x.trim()).length;
+        measure = `ряды ${this.escapeHtml(log.rows)} · ${rowCount} рядов`;
+        if (log.measure_mode === 'rows_bushes') measure += ` · ${log.bushes} кустов`;
+      }
+      const place = log.measure_mode === 'hours' && !log.quarter
+        ? '' : ` · Кв.${this.escapeHtml(log.quarter)} кл.${this.escapeHtml(log.cell)}`;
+      return `
+        <div class="entry-card">
+          <div class="log-info">
+            <div class="log-employee">${this.escapeHtml(log.employee)}</div>
+            <div class="log-meta">${this.escapeHtml(log.work_type || '')}${place}</div>
+            <div class="log-meta">${measure}</div>
+          </div>
+          <button class="delete-btn" onclick="app.deleteEntry(${log.id})">Удалить</button>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // Загружает клетки выбранного квартала в селект #i2-cell.
+  async refreshI2Cells() {
+    const cSel = document.getElementById('i2-cell');
+    if (!cSel) return;
+    if (!this.ctxQuarter) {
+      cSel.innerHTML = '<option value="">Клетка...</option>';
       return;
     }
-    if (!date || !input.trim()) {
-      this.showResult('❌ Введи дату и хотя бы одну строку с сотрудником', true, resultDiv);
-      return;
-    }
+    const cells = await this.loadCells(this.ctxQuarter);
+    cSel.innerHTML = '<option value="">Клетка...</option>' +
+      cells.map(c => `<option value="${c}" ${String(c) === String(this.ctxCell) ? 'selected' : ''}>Клетка ${c}</option>`).join('');
+  }
 
-    const btn = document.getElementById('process-btn');
-    this.processing = true;
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Обрабатываю...'; }
+  async onInputDateChange() {
+    this.inputDate = document.getElementById('i2-date').value || this.getTodayDate();
+    await this.loadAttendance(this.inputDate);
+    await this.loadTodayEntries(this.inputDate);
+    this.renderInput();
+  }
 
+  async onI2QuarterChange() {
+    this.ctxQuarter = document.getElementById('i2-quarter').value;
+    this.ctxCell = '';
+    await this.refreshI2Cells();
+  }
+
+  onI2CellChange() {
+    this.ctxCell = document.getElementById('i2-cell').value;
+  }
+
+  onI2WorkTypeChange() {
+    this.ctxWorkType = document.getElementById('i2-worktype').value;
+  }
+
+  setMeasureMode(mode) {
+    this.measureMode = mode;
+    this.renderInput();
+  }
+
+  toggleRoster() {
+    this.rosterOpen = !this.rosterOpen;
+    this.renderInput();
+  }
+
+  async addWorkType() {
+    const input = document.getElementById('i2-new-worktype');
+    const name = input ? input.value.trim() : '';
+    const msg = document.getElementById('i2-msg');
+    if (!name) { if (msg) msg.textContent = '❌ Впиши название вида работ'; return; }
     try {
-      const response = await fetch('/api/process', {
+      const r = await this.apiFetch('/api/work-types', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date, input, estate: this.estate, quarter, cell })
+        body: JSON.stringify({ name }),
       });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { if (msg) msg.textContent = '❌ ' + (data.error || 'Ошибка'); return; }
+      await this.loadWorkTypes();
+      this.ctxWorkType = data.work_type ? data.work_type.name : name;
+      this.renderInput();
+    } catch (e) {
+      if (msg) msg.textContent = '❌ ' + e.message;
+    }
+  }
 
-      const result = await response.json();
-
-      if (response.ok) {
-        this.showResult(result.report, false, resultDiv);
-        // Очищаем поле — чтобы тот же текст нельзя было отправить повторно.
-        const inputEl = document.getElementById('input');
-        if (inputEl) inputEl.value = '';
-      } else {
-        this.showResult('❌ ' + result.error, true, resultDiv);
+  async addEmployee() {
+    const input = document.getElementById('i2-new-emp');
+    const name = input ? input.value.trim() : '';
+    if (!name) return;
+    try {
+      const r = await this.apiFetch('/api/employees', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { alert('Ошибка: ' + (data.error || 'не удалось')); return; }
+      await this.loadEmployees();
+      // Нового сразу отмечаем присутствующим.
+      if (data.employee) {
+        await this.markPresent(data.employee.id);
+        await this.loadAttendance(this.inputDate);
       }
-    } catch (error) {
-      this.showResult('❌ ' + error.message, true, resultDiv);
+      this.renderInput();
+    } catch (e) {
+      alert('Ошибка: ' + e.message);
+    }
+  }
+
+  async deleteEmployee(id) {
+    if (!confirm('Удалить этого сотрудника из списка бригады?')) return;
+    try {
+      const r = await this.apiFetch('/api/employees/' + id, { method: 'DELETE' });
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        alert('Ошибка: ' + (data.error || 'не удалось'));
+        return;
+      }
+      if (this.selectedEmployeeId === id) this.selectedEmployeeId = null;
+      await this.loadEmployees();
+      await this.loadAttendance(this.inputDate);
+      this.renderInput();
+    } catch (e) {
+      alert('Ошибка: ' + e.message);
+    }
+  }
+
+  async togglePresent(employeeId) {
+    const isPresent = this.present.some(p => p.employee_id === employeeId);
+    try {
+      if (isPresent) {
+        await this.apiFetch('/api/attendance', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ date: this.inputDate, employee_id: employeeId }),
+        });
+        if (this.selectedEmployeeId === employeeId) this.selectedEmployeeId = null;
+      } else {
+        await this.markPresent(employeeId);
+      }
+      await this.loadAttendance(this.inputDate);
+      this.renderInput();
+    } catch (e) {
+      alert('Ошибка: ' + e.message);
+    }
+  }
+
+  async markPresent(employeeId) {
+    await this.apiFetch('/api/attendance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date: this.inputDate, employee_id: employeeId }),
+    });
+  }
+
+  selectWorker(employeeId) {
+    this.selectedEmployeeId = employeeId;
+    this.renderInput();
+  }
+
+  async addEntry() {
+    if (this.adding) return;
+    const msg = document.getElementById('i2-msg');
+    const setMsg = (t) => { if (msg) { msg.className = 'auth-msg'; msg.textContent = t; } };
+    if (!this.estate) { setMsg('❌ Сначала выбери хозяйство'); return; }
+    const employee = this.selectedName();
+    if (!employee) { setMsg('❌ Выбери сотрудника (плашку выше)'); return; }
+    if (!this.ctxWorkType) { setMsg('❌ Выбери вид работ'); return; }
+
+    const body = {
+      date: this.inputDate,
+      estate: this.estate,
+      quarter: this.ctxQuarter,
+      cell: this.ctxCell,
+      work_type: this.ctxWorkType,
+      measure_mode: this.measureMode,
+      employee: employee,
+    };
+    if (this.measureMode === 'hours') {
+      const hoursEl = document.getElementById('i2-hours');
+      body.hours = hoursEl ? hoursEl.value : '';
+    } else {
+      if (!this.ctxCell) { setMsg('❌ Выбери клетку'); return; }
+      const rowsEl = document.getElementById('i2-rows');
+      body.rows = rowsEl ? rowsEl.value : '';
+    }
+
+    const btn = document.getElementById('i2-add-btn');
+    this.adding = true;
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Добавляю...'; }
+    try {
+      const r = await this.apiFetch('/api/logs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { setMsg('❌ ' + (data.error || 'Ошибка')); return; }
+      await this.loadTodayEntries(this.inputDate);
+      this.selectedEmployeeId = null;
+      this.renderInput();
+    } catch (e) {
+      setMsg('❌ ' + e.message);
     } finally {
-      this.processing = false;
-      if (btn) { btn.disabled = false; btn.textContent = 'Обработать'; }
+      this.adding = false;
+      const b = document.getElementById('i2-add-btn');
+      if (b) { b.disabled = false; b.textContent = 'Добавить'; }
+    }
+  }
+
+  async deleteEntry(id) {
+    if (!confirm('Удалить эту запись? Действие нельзя отменить.')) return;
+    try {
+      const r = await this.apiFetch('/api/logs/' + id, { method: 'DELETE' });
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        alert('Ошибка удаления: ' + (data.error || 'не удалось'));
+        return;
+      }
+      await this.loadTodayEntries(this.inputDate);
+      this.renderInput();
+    } catch (e) {
+      alert('Ошибка: ' + e.message);
     }
   }
 
@@ -563,124 +816,6 @@ class BrigadeAssistant {
       }
     } catch (error) {
       this.showResult('❌ ' + error.message, true, resultDiv);
-    }
-  }
-
-  initVoiceInput() {
-    // Web Speech API: распознавание речи прямо в браузере, без сервера.
-    // Если браузер не поддерживает (старый Android, часть iPhone) —
-    // прячем кнопку, остаётся ручной ввод.
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) {
-      const btn = document.getElementById('voice-btn');
-      if (btn) btn.style.display = 'none';
-    }
-  }
-
-  toggleVoice() {
-    if (this.isRecording) {
-      this.stopRecording();
-    } else {
-      this.startRecording();
-    }
-  }
-
-  startRecording() {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) {
-      this.setVoiceStatus('❌ Браузер не поддерживает распознавание речи');
-      return;
-    }
-
-    const textarea = document.getElementById('input');
-    // Базовый текст — то, что уже было в поле до начала записи.
-    this.voiceBaseText = textarea.value;
-
-    const recognition = new SR();
-    recognition.lang = 'ru-RU';
-    recognition.continuous = true;      // не обрывается на паузах
-    recognition.interimResults = true;  // живой текст по ходу речи
-
-    recognition.onresult = (event) => {
-      // Пересобираем текст с нуля на каждом событии — идемпотентно.
-      // На Android Chrome event.resultIndex ненадёжен, и уже распознанные
-      // фразы приходят повторно; накапливать нельзя — строки задвоятся.
-      let finalText = '';
-      let interimText = '';
-      for (let i = 0; i < event.results.length; i++) {
-        const res = event.results[i];
-        const transcript = (res[0].transcript || '').trim();
-        if (!transcript) continue;
-        if (res.isFinal) {
-          finalText += (finalText ? '\n' : '') + transcript;
-        } else {
-          interimText += (interimText ? ' ' : '') + transcript;
-        }
-      }
-      // Базовый текст + завершённые фразы (каждая на своей строке) + текущая.
-      const parts = [];
-      if (this.voiceBaseText) parts.push(this.voiceBaseText);
-      if (finalText) parts.push(finalText);
-      if (interimText) parts.push(interimText);
-      textarea.value = parts.join('\n');
-    };
-
-    recognition.onerror = (event) => {
-      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-        this.setVoiceStatus('❌ Нет доступа к микрофону');
-      } else if (event.error === 'no-speech') {
-        this.setVoiceStatus('⚠ Речь не распознана');
-      } else if (event.error === 'network') {
-        this.setVoiceStatus('❌ Нет сети');
-      } else {
-        this.setVoiceStatus('❌ Ошибка распознавания');
-      }
-    };
-
-    recognition.onend = () => {
-      this.isRecording = false;
-      this.recognition = null;
-      this.updateVoiceUI();
-    };
-
-    this.recognition = recognition;
-    this.isRecording = true;
-    this.updateVoiceUI();
-    this.setVoiceStatus('🔴 Запись... жми «⏹ Стоп», когда закончишь');
-
-    try {
-      recognition.start();
-    } catch (err) {
-      this.isRecording = false;
-      this.recognition = null;
-      this.updateVoiceUI();
-      this.setVoiceStatus('❌ ' + err.message);
-    }
-  }
-
-  stopRecording() {
-    if (this.recognition) {
-      try { this.recognition.stop(); } catch (e) {}
-    }
-    this.isRecording = false;
-    this.updateVoiceUI();
-    this.setVoiceStatus('');
-  }
-
-  setVoiceStatus(text) {
-    const el = document.getElementById('voice-status');
-    if (el) el.textContent = text;
-  }
-
-  updateVoiceUI() {
-    const btn = document.getElementById('voice-btn');
-    if (!btn) return;
-    if (this.isRecording) {
-      btn.textContent = '⏹ Стоп';
-      btn.classList.add('recording');
-    } else {
-      btn.textContent = '🎤 Голос';
-      btn.classList.remove('recording');
     }
   }
 
