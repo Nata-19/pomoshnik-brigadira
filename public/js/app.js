@@ -610,11 +610,15 @@ class BrigadeAssistant {
   }
 
   async markPresent(employeeId) {
-    await this.apiFetch('/api/attendance', {
+    const r = await this.apiFetch('/api/attendance', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ date: this.inputDate, employee_id: employeeId }),
     });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      throw new Error(data.error || 'Не удалось отметить присутствующим');
+    }
   }
 
   selectWorker(employeeId) {
@@ -728,7 +732,7 @@ class BrigadeAssistant {
           measure = `${log.hours} часов`;
         } else {
           const rowCount = String(log.rows || '').split(',').filter(x => x.trim()).length;
-          measure = `ряды [${this.escapeHtml(log.rows)}] · ${rowCount} рядов`;
+          measure = `ряды ${this.escapeHtml(log.rows)} · ${rowCount} рядов`;
           if (log.measure_mode === 'rows_bushes') measure += ` · ${log.bushes} кустов`;
         }
         const place = (log.measure_mode === 'hours' && !log.quarter)

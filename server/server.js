@@ -122,6 +122,24 @@ const getSecret = () => SESSION_SECRET;
         await pool.query('INSERT INTO work_types (name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [name]);
       }
     }
+    // Пост-релизные ограничения целостности: CHECK на режим и FK с каскадом
+    // на явку. Сначала чистим возможные сироты (на случай старых данных),
+    // потом добавляем ограничения только если их ещё нет — идемпотентно.
+    await pool.query(`DELETE FROM attendance WHERE employee_id NOT IN (SELECT id FROM employees)`);
+    await pool.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_measure_mode') THEN
+          ALTER TABLE work_logs
+            ADD CONSTRAINT chk_measure_mode
+            CHECK (measure_mode IN ('rows_bushes', 'rows_only', 'hours'));
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_attendance_employee') THEN
+          ALTER TABLE attendance
+            ADD CONSTRAINT fk_attendance_employee
+            FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE CASCADE;
+        END IF;
+      END $$;
+    `);
     console.log('✅ Connected to Postgres');
   } catch (err) {
     console.error('❌ Postgres init failed:', err.message);
@@ -450,6 +468,10 @@ app.post('/api/employees', requireAuthMw, async (req, res) => {
 app.delete('/api/employees/:id', requireAuthMw, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: 'Неверный id' });
+    }
+    // FK с ON DELETE CASCADE сам уберёт записи явки этого сотрудника.
     const result = await pool.query(
       'DELETE FROM employees WHERE id = $1 AND brigadier_id = $2 RETURNING id',
       [id, req.brigadier.id]
@@ -457,10 +479,6 @@ app.delete('/api/employees/:id', requireAuthMw, async (req, res) => {
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Сотрудник не найден' });
     }
-    await pool.query(
-      'DELETE FROM attendance WHERE employee_id = $1 AND brigadier_id = $2',
-      [id, req.brigadier.id]
-    );
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -530,6 +548,9 @@ app.post('/api/attendance', requireAuthMw, async (req, res) => {
       return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
     }
     const eid = parseInt(employee_id, 10);
+    if (!Number.isInteger(eid)) {
+      return res.status(400).json({ error: 'Неверный id сотрудника' });
+    }
     const own = await pool.query(
       'SELECT 1 FROM employees WHERE id = $1 AND brigadier_id = $2',
       [eid, req.brigadier.id]
