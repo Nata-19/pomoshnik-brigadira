@@ -178,7 +178,7 @@ class BrigadeAssistant {
           <input type="text" id="setup-login" autocomplete="username">
         </div>
         <div class="form-group">
-          <label>Пароль (не короче 6 символов):</label>
+          <label>Пароль (не короче 8 символов):</label>
           <input type="password" id="setup-password" autocomplete="new-password">
         </div>
         <button onclick="app.submitSetup()">Создать администратора</button>
@@ -225,7 +225,7 @@ class BrigadeAssistant {
           <input type="text" id="auth-login" autocomplete="username">
         </div>
         <div class="form-group">
-          <label>Пароль${isReg ? ' (не короче 6 символов)' : ''}:</label>
+          <label>Пароль${isReg ? ' (не короче 8 символов)' : ''}:</label>
           <input type="password" id="auth-password" autocomplete="${isReg ? 'new-password' : 'current-password'}">
         </div>
         <button onclick="app.${isReg ? 'submitRegister' : 'submitLogin'}()">${isReg ? 'Зарегистрироваться' : 'Войти'}</button>
@@ -890,8 +890,8 @@ class BrigadeAssistant {
         msgEl.className = 'reset-msg' + (ok ? ' reset-ok' : '');
       }
     };
-    if (!password || password.length < 6) {
-      showMsg('❌ Пароль не короче 6 символов', false);
+    if (!password || password.length < 8) {
+      showMsg('❌ Пароль не короче 8 символов', false);
       return;
     }
     try {

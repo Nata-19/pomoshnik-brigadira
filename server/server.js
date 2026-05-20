@@ -8,15 +8,36 @@ const DataParser = require('./parser');
 const cookieParser = require('cookie-parser');
 const crypto = require('crypto');
 const auth = require('./auth');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 app.set('trust proxy', 1); // за HTTPS-прокси Render
+
+// Security-заголовки. CSP отключаем — inline-скрипты PWA ломаются дефолтным CSP,
+// а настройка под наш набор файлов отдельная история. HSTS, X-Frame-Options,
+// X-Content-Type-Options, Referrer-Policy и пр. — включены.
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+}));
+
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
 app.use(cookieParser());
+
+// Защита от перебора пароля: 5 попыток входа в минуту с одного IP.
+// Применяется к POST /api/login, /api/register, /api/setup (см. ниже).
+const authLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Слишком много попыток. Подожди минуту и попробуй снова.' },
+});
 
 // Статические файлы
 app.use(express.static(path.join(__dirname, '../public')));
@@ -246,7 +267,7 @@ app.get('/api/setup-needed', async (req, res) => {
   }
 });
 
-app.post('/api/setup', async (req, res) => {
+app.post('/api/setup', authLimiter, async (req, res) => {
   try {
     const adminExists = await pool.query(
       "SELECT 1 FROM brigadiers WHERE is_admin = true LIMIT 1"
@@ -258,8 +279,8 @@ app.post('/api/setup', async (req, res) => {
     if (!login || !login.trim()) {
       return res.status(400).json({ error: 'Укажи логин' });
     }
-    if (!password || password.length < 6) {
-      return res.status(400).json({ error: 'Пароль не короче 6 символов' });
+    if (!password || password.length < 8) {
+      return res.status(400).json({ error: 'Пароль не короче 8 символов' });
     }
     const ins = await pool.query(
       `INSERT INTO brigadiers (login, password_hash, status, is_admin)
@@ -281,14 +302,14 @@ app.post('/api/setup', async (req, res) => {
 });
 
 // Регистрация — создаёт аккаунт в статусе «ожидает подтверждения».
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', authLimiter, async (req, res) => {
   try {
     const { login, password } = req.body;
     if (!login || !login.trim()) {
       return res.status(400).json({ error: 'Укажи логин' });
     }
-    if (!password || password.length < 6) {
-      return res.status(400).json({ error: 'Пароль не короче 6 символов' });
+    if (!password || password.length < 8) {
+      return res.status(400).json({ error: 'Пароль не короче 8 символов' });
     }
     const exists = await pool.query(
       'SELECT 1 FROM brigadiers WHERE LOWER(login) = LOWER($1)',
@@ -309,7 +330,7 @@ app.post('/api/register', async (req, res) => {
 });
 
 // Вход — разрешён только для статуса active.
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', authLimiter, async (req, res) => {
   try {
     const { login, password } = req.body;
     if (!login || !password) {
@@ -413,8 +434,8 @@ app.post('/api/admin/brigadiers/:id/reset-password', requireAuthMw, auth.require
   try {
     const id = parseInt(req.params.id, 10);
     const { password } = req.body;
-    if (!password || password.length < 6) {
-      return res.status(400).json({ error: 'Пароль не короче 6 символов' });
+    if (!password || password.length < 8) {
+      return res.status(400).json({ error: 'Пароль не короче 8 символов' });
     }
     await pool.query(
       'UPDATE brigadiers SET password_hash = $1 WHERE id = $2',
