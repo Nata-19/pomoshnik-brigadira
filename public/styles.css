@@ -204,37 +204,7 @@ button:active {
     background: #c0392b;
 }
 
-.estate-picker {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-}
-
-.estate-picker label {
-    margin-bottom: 0;
-    flex-shrink: 0;
-}
-
-.estate-picker select {
-    flex: 1;
-    min-width: 200px;
-}
-
-.estate-badge {
-    display: inline-block;
-    padding: 4px 10px;
-    border-radius: 12px;
-    background: #667eea;
-    color: white;
-    font-size: 13px;
-    font-weight: 600;
-    white-space: nowrap;
-}
-
-.estate-badge:empty {
-    display: none;
-}
+/* Этап 2 убрал старую плашку хозяйства — оно теперь chip в шапке. */
 
 .voice-row {
     display: flex;
@@ -327,11 +297,10 @@ button:active {
 
 .app-header {
     display: flex;
-    justify-content: space-between;
+    flex-direction: column;
     align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-    margin-bottom: 20px;
+    gap: 8px;
+    margin-bottom: 18px;
 }
 
 .app-header h1 {
@@ -344,6 +313,98 @@ button:active {
     gap: 10px;
     font-size: 14px;
     color: #555;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+/* Голубая плашка хозяйства в шапке (рядом с «Выйти»). */
+.estate-chip {
+    width: auto;
+    margin: 0;
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    border-radius: 14px;
+    border: 1px solid #6ab0e3;
+    background: #e3f1fb;
+    color: #205a87;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.estate-chip:valid {
+    background: #6ab0e3;
+    color: #fff;
+    border-color: #4a8fc2;
+}
+
+/* Дата отдельной плашкой в строке. */
+.date-row {
+    display: flex;
+    justify-content: center;
+    margin: 0 0 14px;
+}
+
+.date-chip {
+    width: auto;
+    margin: 0;
+    padding: 8px 16px;
+    font-size: 15px;
+    font-weight: 500;
+    border-radius: 14px;
+    border: 1px solid #6ab0e3;
+    background: #e3f1fb;
+    color: #205a87;
+    cursor: pointer;
+}
+
+/* Селекты-плашки в блоке «Контекст» (квартал/клетка/вид работ). */
+.chips-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.chip-select {
+    width: auto;
+    margin: 0;
+    padding: 7px 12px;
+    font-size: 13px;
+    border-radius: 14px;
+    border: 1px solid #bbb;
+    background: #fff;
+    color: #333;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.chip-select:valid {
+    background: #2e7d32;
+    color: #fff;
+    border-color: #2e7d32;
+}
+
+/* Поле «новый вид работ» + зелёная кнопка-плашка «+ вид работ». */
+.add-inline input {
+    border-radius: 14px;
+    padding: 7px 12px;
+    border: 1px solid #bbb;
+}
+
+.add-inline .mini-btn {
+    padding: 7px 12px;
+    border-radius: 14px;
+    background: #2e7d32;
+    color: #fff;
+    font-size: 13px;
+    border: 1px solid #2e7d32;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.add-inline .mini-btn:hover {
+    background: #266b2a;
 }
 
 .logout-btn {

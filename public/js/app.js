@@ -165,12 +165,6 @@ class BrigadeAssistant {
     this.selectedEmployeeId = null;
     await this.loadTodayEntries(this.inputDate);
     this.renderInput();
-    // Подсвечиваем текущее хозяйство в бейдже
-    const badge = document.getElementById('estate-badge');
-    if (badge) {
-      const est = this.estates.find(e => e.id === this.estate);
-      badge.textContent = est ? est.name : '';
-    }
   }
 
   renderSetup() {
@@ -288,7 +282,6 @@ class BrigadeAssistant {
 
   render() {
     const root = document.getElementById('root');
-    const currentEstate = this.estates.find(e => e.id === this.estate);
     root.innerHTML = `
       <div class="container">
         <div class="app-header">
@@ -296,16 +289,11 @@ class BrigadeAssistant {
           <div class="app-user">
             <span>${this.escapeHtml(this.me ? this.me.login : '')}</span>
             <button class="logout-btn" onclick="app.logout()">Выйти</button>
+            <select id="estate-sel" class="estate-chip" required onchange="app.onEstateChange()">
+              <option value="">📍 Выбор хозяйства</option>
+              ${this.estates.map(e => `<option value="${e.id}" ${e.id === this.estate ? 'selected' : ''}>${this.escapeHtml(e.name)}</option>`).join('')}
+            </select>
           </div>
-        </div>
-
-        <div class="form-group estate-picker">
-          <label>Хозяйство:</label>
-          <select id="estate-sel" onchange="app.onEstateChange()">
-            <option value="">— выберите хозяйство —</option>
-            ${this.estates.map(e => `<option value="${e.id}" ${e.id === this.estate ? 'selected' : ''}>${this.escapeHtml(e.name)}</option>`).join('')}
-          </select>
-          <span id="estate-badge" class="estate-badge">${currentEstate ? this.escapeHtml(currentEstate.name) : ''}</span>
         </div>
 
         <div class="tabs">
@@ -375,26 +363,25 @@ class BrigadeAssistant {
       `<button class="mode-btn ${this.measureMode === m ? 'active' : ''}" onclick="app.setMeasureMode('${m}')">${label}</button>`;
     const selName = this.selectedName();
     tab.innerHTML = `
-      <div class="form-group">
-        <label>Дата:</label>
-        <input type="date" id="i2-date" value="${this.inputDate}" onchange="app.onInputDateChange()">
+      <div class="date-row">
+        <input type="date" id="i2-date" class="date-chip" value="${this.inputDate}" onchange="app.onInputDateChange()">
       </div>
 
       <div class="ctx-block">
         <div class="block-label">Контекст</div>
-        <div class="row-2cols">
-          <select id="i2-quarter" onchange="app.onI2QuarterChange()">
+        <div class="chips-row">
+          <select id="i2-quarter" class="chip-select" required onchange="app.onI2QuarterChange()">
             <option value="">Квартал...</option>
             ${this.quarters.map(q => `<option value="${q.id}" ${q.id === this.ctxQuarter ? 'selected' : ''}>${this.escapeHtml(q.name)}</option>`).join('')}
           </select>
-          <select id="i2-cell" onchange="app.onI2CellChange()">
+          <select id="i2-cell" class="chip-select" required onchange="app.onI2CellChange()">
             <option value="">Клетка...</option>
           </select>
+          <select id="i2-worktype" class="chip-select" required onchange="app.onI2WorkTypeChange()">
+            <option value="">Вид работ...</option>
+            ${this.workTypes.map(w => `<option value="${this.escapeHtml(w.name)}" ${w.name === this.ctxWorkType ? 'selected' : ''}>${this.escapeHtml(w.name)}</option>`).join('')}
+          </select>
         </div>
-        <select id="i2-worktype" onchange="app.onI2WorkTypeChange()">
-          <option value="">Вид работ...</option>
-          ${this.workTypes.map(w => `<option value="${this.escapeHtml(w.name)}" ${w.name === this.ctxWorkType ? 'selected' : ''}>${this.escapeHtml(w.name)}</option>`).join('')}
-        </select>
         <div class="add-inline">
           <input type="text" id="i2-new-worktype" placeholder="Новый вид работ" autocomplete="off">
           <button class="mini-btn" onclick="app.addWorkType()">+ вид работ</button>
