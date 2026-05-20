@@ -255,10 +255,13 @@ class DataParser {
   }
 
   // Разбирает строку рядов вида "1-5, 9, 11" в отсортированный массив чисел.
+  // На цифровой клавиатуре телефона нет запятой и пробела, поэтому принимаем
+  // также точку, точку с запятой и пробел как разделители — "1-5.9.11" и
+  // "1-5 9 11" работают так же, как "1-5, 9, 11".
   // Бросает понятную ошибку при неразборчивом вводе.
   parseRowList(spec) {
     const rows = new Set();
-    const parts = String(spec == null ? '' : spec).split(',').map(p => p.trim()).filter(Boolean);
+    const parts = String(spec == null ? '' : spec).split(/[,.;\s]+/).map(p => p.trim()).filter(Boolean);
     if (parts.length === 0) {
       throw new Error('Укажи ряды, например: 1-5, 9, 11');
     }

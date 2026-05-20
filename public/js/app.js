@@ -427,7 +427,7 @@ class BrigadeAssistant {
         <div class="sel-emp">Сотрудник: <b>${selName ? this.escapeHtml(selName) : '— выбери плашку выше'}</b></div>
         ${this.measureMode === 'hours'
           ? '<div class="form-group"><label>Часы:</label><input type="number" id="i2-hours" min="1" inputmode="numeric"></div>'
-          : '<div class="form-group"><label>Ряды (например: 1-5, 9, 11):</label><input type="text" id="i2-rows" inputmode="numeric"></div>'}
+          : '<div class="form-group"><label>Ряды (например: 1-5, 9, 11 или 1-5.9.11):</label><input type="text" id="i2-rows" inputmode="numeric"></div>'}
         <button id="i2-add-btn" onclick="app.addEntry()">Добавить</button>
         <div id="i2-msg" class="auth-msg"></div>
       </div>
