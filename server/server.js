@@ -568,6 +568,95 @@ app.delete('/api/attendance', requireAuthMw, async (req, res) => {
   }
 });
 
+// --- Этап 2: создание одной записи журнала (структурированный ввод) ---
+app.post('/api/logs', requireAuthMw, async (req, res) => {
+  try {
+    const { date, estate, quarter, cell, work_type, measure_mode, employee, rows, hours } = req.body;
+
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
+    }
+    if (!estate || !inventory.estates[estate]) {
+      return res.status(400).json({ error: 'Не выбрано хозяйство' });
+    }
+    if (!employee || !employee.trim()) {
+      return res.status(400).json({ error: 'Выбери сотрудника' });
+    }
+    if (!work_type || !work_type.trim()) {
+      return res.status(400).json({ error: 'Выбери вид работ' });
+    }
+    if (!['rows_bushes', 'rows_only', 'hours'].includes(measure_mode)) {
+      return res.status(400).json({ error: 'Неизвестный режим подсчёта' });
+    }
+
+    let rowsStr = '';
+    let bushes = 0;
+    let hoursVal = null;
+
+    if (measure_mode === 'hours') {
+      const h = parseInt(hours, 10);
+      if (!Number.isInteger(h) || h <= 0) {
+        return res.status(400).json({ error: 'Укажи часы числом' });
+      }
+      hoursVal = h;
+    } else {
+      if (!quarter || !cell) {
+        return res.status(400).json({ error: 'Выбери клетку' });
+      }
+      let rowNums;
+      try {
+        rowNums = parser.parseRowList(rows);
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+      rowsStr = rowNums.join(',');
+      if (measure_mode === 'rows_bushes') {
+        try {
+          bushes = parser.getBushesCount(estate, String(quarter), String(cell), rowNums);
+        } catch (e) {
+          return res.status(400).json({ error: e.message });
+        }
+      }
+    }
+
+    // Защита от непреднамеренных дублей: если ровно такая же запись была
+    // создана в последние 10 секунд — отказываем. Случайный повторный тап
+    // через несколько секунд после ответа не пройдёт, а намеренная одинаковая
+    // запись позже этого окна — пройдёт.
+    const dup = await pool.query(
+      `SELECT id FROM work_logs
+       WHERE brigadier_id = $1 AND date = $2 AND estate_id = $3
+         AND quarter = $4 AND cell = $5 AND employee = $6
+         AND work_type = $7 AND measure_mode = $8
+         AND COALESCE(rows, '') = COALESCE($9, '')
+         AND COALESCE(hours, -1) = COALESCE($10, -1)
+         AND created_at > NOW() - INTERVAL '10 seconds'
+       LIMIT 1`,
+      [req.brigadier.id, date, estate,
+       quarter ? String(quarter) : '', cell ? String(cell) : '',
+       employee.trim(), work_type.trim(), measure_mode,
+       rowsStr, hoursVal]
+    );
+    if (dup.rows.length > 0) {
+      return res.status(409).json({ error: 'Такая же запись только что добавлена' });
+    }
+
+    const ins = await pool.query(
+      `INSERT INTO work_logs
+        (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, work_type, measure_mode, hours)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING id`,
+      [date, estate, quarter ? String(quarter) : '', cell ? String(cell) : '',
+       employee.trim(), rowsStr, bushes, req.brigadier.id,
+       work_type.trim(), measure_mode, hoursVal]
+    );
+    res.json({ success: true, id: ins.rows[0].id });
+  } catch (error) {
+    console.error('Create log error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Health-check для UptimeRobot и Render
 app.get('/health', (req, res) => res.json({ ok: true }));
 
