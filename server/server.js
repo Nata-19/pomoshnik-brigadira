@@ -824,6 +824,27 @@ app.get('/api/report', requireAuthMw, async (req, res) => {
       }
       report += `\n`;
     }
+
+    // Сводка «Всего за день» — для каждого дня в периоде агрегируем
+    // по (квартал, клетка) поверх всех сотрудников и видов работ. При
+    // выборе одного дня (from === to) выходит одна такая секция в конце.
+    const byDay = {};
+    for (const r of result.rows) {
+      if (!byDay[r.date]) byDay[r.date] = {};
+      const ck = (r.quarter || '') + '|' + (r.cell || '');
+      if (!byDay[r.date][ck]) byDay[r.date][ck] = { quarter: r.quarter, cell: r.cell, slot: newSlot() };
+      addRec(byDay[r.date][ck].slot, r);
+    }
+    const days = Object.keys(byDay).sort();
+    for (const day of days) {
+      report += `Всего за день ${day}:\n`;
+      for (const ck of Object.keys(byDay[day])) {
+        const c = byDay[day][ck];
+        const where = c.quarter ? `Кв.${c.quarter}, кл.${c.cell}` : 'без клетки';
+        report += `  ${where} — ${unitText(c.slot)}\n`;
+      }
+      report += `\n`;
+    }
     report += 'Ряды, кусты и часы суммируются раздельно — каждая единица своя.';
     res.json({ report });
   } catch (error) {
