@@ -359,7 +359,14 @@ app.post('/api/login', authLimiter, async (req, res) => {
 });
 
 app.post('/api/logout', (req, res) => {
-  res.clearCookie('token');
+  // Express clearCookie сматчит куку только если опции совпадают с теми,
+  // что были при установке. Без этих флагов браузер игнорировал удаление
+  // и Set-Cookie от login оставался жить (баг найден 2026-05-21).
+  res.clearCookie('token', {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'lax',
+  });
   res.json({ success: true });
 });
 
