@@ -48,6 +48,17 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
+// Защита от случайного включения DEMO_MODE с боевой БД.
+// PROD_DB_FINGERPRINT — короткая подстрока из connection string боевого Neon
+// (например, имя его endpoint типа 'ep-cool-cloud-xxx'). Задаётся в env
+// демо-деплоя. Если задано и совпадает в DATABASE_URL — отказ запуска.
+const { DEMO_MODE } = require('./config');
+const prodFingerprint = process.env.PROD_DB_FINGERPRINT || '';
+if (DEMO_MODE && prodFingerprint && process.env.DATABASE_URL.includes(prodFingerprint)) {
+  console.error('❌ DEMO_MODE=true И DATABASE_URL содержит PROD_DB_FINGERPRINT — это похоже на боевую БД. Запуск отменён.');
+  process.exit(1);
+}
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
