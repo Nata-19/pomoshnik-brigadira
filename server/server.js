@@ -172,6 +172,68 @@ const getSecret = () => SESSION_SECRET;
         END IF;
       END $$;
     `);
+
+    // --- Демо-режим: таблицы и колонки для изолированных сессий ---
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS demo_sessions (
+        id TEXT PRIMARY KEY,
+        culture TEXT,
+        unit TEXT,
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS demo_session_id TEXT REFERENCES demo_sessions(id) ON DELETE CASCADE`);
+    await pool.query(`ALTER TABLE work_types ADD COLUMN IF NOT EXISTS demo_session_id TEXT REFERENCES demo_sessions(id) ON DELETE CASCADE`);
+    await pool.query(`ALTER TABLE work_types ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'manual'`);
+    await pool.query(`ALTER TABLE work_types ADD COLUMN IF NOT EXISTS default_measure_mode TEXT NOT NULL DEFAULT 'rows_bushes'`);
+    await pool.query(`ALTER TABLE attendance ADD COLUMN IF NOT EXISTS demo_session_id TEXT REFERENCES demo_sessions(id) ON DELETE CASCADE`);
+    await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS demo_session_id TEXT REFERENCES demo_sessions(id) ON DELETE CASCADE`);
+
+    // Инвентарь демо — в БД, не в JSON-файле, чтобы каждая сессия имела свой.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS demo_quarters (
+        id SERIAL PRIMARY KEY,
+        demo_session_id TEXT NOT NULL REFERENCES demo_sessions(id) ON DELETE CASCADE,
+        quarter_key TEXT NOT NULL,
+        name TEXT NOT NULL,
+        unit TEXT NOT NULL,
+        UNIQUE (demo_session_id, quarter_key)
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS demo_cells (
+        id SERIAL PRIMARY KEY,
+        quarter_id INTEGER NOT NULL REFERENCES demo_quarters(id) ON DELETE CASCADE,
+        cell_key TEXT NOT NULL,
+        hectares NUMERIC(10,2),
+        UNIQUE (quarter_id, cell_key)
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS demo_rows (
+        id SERIAL PRIMARY KEY,
+        cell_id INTEGER NOT NULL REFERENCES demo_cells(id) ON DELETE CASCADE,
+        row_num INTEGER NOT NULL,
+        bushes INTEGER NOT NULL,
+        UNIQUE (cell_id, row_num)
+      )
+    `);
+
+    // Расширяем CHECK measure_mode (старый ограничивал 3 значениями — теперь надо
+    // 11). Дропаем старый, добавляем новый.
+    await pool.query(`
+      DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_measure_mode') THEN
+          ALTER TABLE work_logs DROP CONSTRAINT chk_measure_mode;
+        END IF;
+        ALTER TABLE work_logs ADD CONSTRAINT chk_measure_mode
+          CHECK (measure_mode IN (
+            'rows_bushes', 'rows_only', 'hours', 'hectares', 'kilometers',
+            'poles', 'tons', 'linear_meters', 'tons_km', 'hours_km', 'hectares_tons'
+          ));
+      END $$;
+    `);
+
     console.log('✅ Connected to Postgres');
   } catch (err) {
     console.error('❌ Postgres init failed:', err.message);
