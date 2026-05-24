@@ -319,6 +319,30 @@ if (DEMO_MODE) {
     if (req.path === '/api/config') return next();
     return requireDemo(req, res, next);
   });
+
+  app.post('/api/demo/culture', requireDemo, async (req, res) => {
+    try {
+      const { culture, unit } = req.body;
+      if (!culture || !culture.trim()) {
+        return res.status(400).json({ error: 'Укажи культуру' });
+      }
+      if (req.demo_session.culture) {
+        return res.status(400).json({ error: 'Культура уже выбрана для этой сессии' });
+      }
+      const detectedUnit = unit || demo.detectUnit(culture);
+      if (!detectedUnit) {
+        return res.json({ needUnit: true });
+      }
+      if (!['bush', 'tree', 'other'].includes(detectedUnit)) {
+        return res.status(400).json({ error: 'unit должен быть bush/tree/other' });
+      }
+      await demo.seedEstate(pool, req.demo_session_id, culture.trim(), detectedUnit);
+      res.json({ culture: culture.trim(), unit: detectedUnit });
+    } catch (err) {
+      console.error('demo/culture error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
 }
 
 // API endpoints

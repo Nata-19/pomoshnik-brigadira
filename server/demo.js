@@ -84,6 +84,78 @@ function requireDemoSession(pool) {
   };
 }
 
+// Заводское наполнение Этапа Б: создаёт хозяйство (= культуру в demo_sessions),
+// 2 квартала по 5 клеток с инвентарём, 2-3 примера записей в журнале.
+//
+// unit: 'bush' | 'tree' | 'other' (для термина "растений")
+async function seedEstate(pool, sessionId, culture, unit) {
+  await pool.query(
+    'UPDATE demo_sessions SET culture=$1, unit=$2 WHERE id=$3',
+    [culture, unit, sessionId]
+  );
+
+  // 2 квартала
+  for (let q = 1; q <= 2; q++) {
+    const qres = await pool.query(
+      'INSERT INTO demo_quarters (demo_session_id, quarter_key, name, unit) VALUES ($1, $2, $3, $4) RETURNING id',
+      [sessionId, String(q), `Кв.${q}`, unit]
+    );
+    const quarterId = qres.rows[0].id;
+    // 5 клеток в каждом
+    for (let c = 1; c <= 5; c++) {
+      const cres = await pool.query(
+        'INSERT INTO demo_cells (quarter_id, cell_key, hectares) VALUES ($1, $2, $3) RETURNING id',
+        [quarterId, String(c), 1.5 + c * 0.3]
+      );
+      const cellId = cres.rows[0].id;
+      // 7 рядов в каждой клетке, реалистичные цифры
+      const sampleBushes = [137, 140, 145, 142, 138, 141, 139];
+      for (let row = 1; row <= 7; row++) {
+        await pool.query(
+          'INSERT INTO demo_rows (cell_id, row_num, bushes) VALUES ($1, $2, $3)',
+          [cellId, row, sampleBushes[row - 1]]
+        );
+      }
+    }
+  }
+
+  // Явка Иванова, Петрова, Сидорова на вчера и позавчера
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const dayBefore = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const empRows = await pool.query(
+    'SELECT id, name FROM employees WHERE demo_session_id=$1 ORDER BY id',
+    [sessionId]
+  );
+  for (const date of [yesterday, dayBefore]) {
+    for (const emp of empRows.rows) {
+      await pool.query(
+        'INSERT INTO attendance (brigadier_id, date, employee_id, demo_session_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING',
+        [0, date, emp.id, sessionId]
+      );
+    }
+  }
+
+  // 3 примера записей в журнале
+  // Вчера: Иванов — Обрезка — Кв.1 клет.1 ряды 1-5
+  // Вчера: Петров — Обрезка — Кв.1 клет.2 ряды 1-4
+  // Позавчера: Сидоров — Опрыскивание — Кв.2 5 гектаров
+  await pool.query(
+    `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, brigadier_id, demo_session_id)
+     VALUES ($1, 'demo', '1', '1', 'Иванов', '1,2,3,4,5', 685, 'Обрезка', 'rows_bushes', 0, $2)`,
+    [yesterday, sessionId]
+  );
+  await pool.query(
+    `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, brigadier_id, demo_session_id)
+     VALUES ($1, 'demo', '1', '2', 'Петров', '1,2,3,4', 555, 'Обрезка', 'rows_bushes', 0, $2)`,
+    [yesterday, sessionId]
+  );
+  await pool.query(
+    `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, brigadier_id, demo_session_id)
+     VALUES ($1, 'demo', '2', NULL, 'Сидоров', NULL, 0, 'Опрыскивание', 'hectares', 5, 0, $2)`,
+    [dayBefore, sessionId]
+  );
+}
+
 module.exports = {
   COOKIE_NAME,
   SEED_EMPLOYEES,
@@ -94,4 +166,5 @@ module.exports = {
   createSessionWithSeed,
   DEMO_SESSION_TTL_MS,
   requireDemoSession,
+  seedEstate,
 };
