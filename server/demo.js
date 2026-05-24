@@ -156,6 +156,42 @@ async function seedEstate(pool, sessionId, culture, unit) {
   );
 }
 
+// Возвращает объект инвентаря в формате DataParser:
+// { estates: { demo: { name, quarters: { '1': { name, cells: { '1': [{row, bushes}, ...] } } } } } }
+async function getDemoInventory(pool, sessionId) {
+  const sess = await pool.query('SELECT culture, unit FROM demo_sessions WHERE id=$1', [sessionId]);
+  if (sess.rows.length === 0) return { estates: {} };
+  const culture = sess.rows[0].culture;
+  if (!culture) {
+    return { estates: {} }; // культура ещё не выбрана
+  }
+  const qs = await pool.query(
+    'SELECT id, quarter_key, name, unit FROM demo_quarters WHERE demo_session_id=$1 ORDER BY id',
+    [sessionId]
+  );
+  const quarters = {};
+  for (const q of qs.rows) {
+    const cs = await pool.query(
+      'SELECT id, cell_key FROM demo_cells WHERE quarter_id=$1 ORDER BY id',
+      [q.id]
+    );
+    const cells = {};
+    for (const c of cs.rows) {
+      const rs = await pool.query(
+        'SELECT row_num, bushes FROM demo_rows WHERE cell_id=$1 ORDER BY row_num',
+        [c.id]
+      );
+      cells[c.cell_key] = rs.rows.map(r => ({ row: r.row_num, bushes: r.bushes }));
+    }
+    quarters[q.quarter_key] = { name: q.name, unit: q.unit, cells };
+  }
+  return {
+    estates: {
+      demo: { name: `Демо: ${culture}`, unit: sess.rows[0].unit, quarters }
+    }
+  };
+}
+
 module.exports = {
   COOKIE_NAME,
   SEED_EMPLOYEES,
@@ -167,4 +203,5 @@ module.exports = {
   DEMO_SESSION_TTL_MS,
   requireDemoSession,
   seedEstate,
+  getDemoInventory,
 };
