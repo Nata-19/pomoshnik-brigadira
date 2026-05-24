@@ -350,6 +350,21 @@ if (DEMO_MODE) {
       res.status(500).json({ error: err.message });
     }
   });
+
+  app.post('/api/demo/reset', requireDemo, async (req, res) => {
+    try {
+      await pool.query('DELETE FROM demo_sessions WHERE id=$1', [req.demo_session_id]);
+      const newId = await demo.createSessionWithSeed(pool);
+      res.cookie(demo.COOKIE_NAME, newId, {
+        httpOnly: true, secure: true, sameSite: 'lax',
+        maxAge: demo.DEMO_SESSION_TTL_MS,
+      });
+      res.json({ session_id: newId });
+    } catch (err) {
+      console.error('demo/reset error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
 }
 
 // API endpoints
