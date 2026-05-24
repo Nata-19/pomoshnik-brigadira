@@ -35,6 +35,32 @@ function newSessionId() {
   return 'demo-' + crypto.randomBytes(8).toString('hex');
 }
 
+// Создаёт новую demo_sessions запись и копирует справочные данные (Этап А спеки):
+// сотрудников и виды работ. Возвращает id сессии.
+//
+// pool — pg Pool из server.js, переданный сюда чтобы не плодить модули БД.
+async function createSessionWithSeed(pool) {
+  const sessionId = newSessionId();
+  await pool.query(
+    'INSERT INTO demo_sessions (id) VALUES ($1)',
+    [sessionId]
+  );
+  for (const name of SEED_EMPLOYEES) {
+    await pool.query(
+      'INSERT INTO employees (brigadier_id, name, demo_session_id) VALUES ($1, $2, $3)',
+      [0, name, sessionId]
+    );
+  }
+  for (const wt of [...SEED_WORK_TYPES_MANUAL, ...SEED_WORK_TYPES_MECH]) {
+    const kind = SEED_WORK_TYPES_MANUAL.includes(wt) ? 'manual' : 'mechanized';
+    await pool.query(
+      'INSERT INTO work_types (name, kind, default_measure_mode, demo_session_id) VALUES ($1, $2, $3, $4)',
+      [wt.name, kind, wt.default_measure_mode, sessionId]
+    );
+  }
+  return sessionId;
+}
+
 module.exports = {
   COOKIE_NAME,
   SEED_EMPLOYEES,
@@ -42,5 +68,6 @@ module.exports = {
   SEED_WORK_TYPES_MECH,
   detectUnit,
   newSessionId,
+  createSessionWithSeed,
   DEMO_SESSION_TTL_MS,
 };

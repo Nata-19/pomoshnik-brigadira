@@ -234,6 +234,27 @@ const getSecret = () => SESSION_SECRET;
       END $$;
     `);
 
+    // Уникальность work_types.name — теперь по паре (demo_session_id, name).
+    // В проде demo_session_id NULL, и нам нужна уникальность только по name среди NULL.
+    // PostgreSQL: NULL не сравниваются, поэтому два work_types с одинаковым name и
+    // demo_session_id=NULL пройдут UNIQUE. Чтобы прод сохранил эксклюзивность,
+    // делаем два partial-unique-index'а.
+    await pool.query(`
+      DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'work_types_name_key') THEN
+          ALTER TABLE work_types DROP CONSTRAINT work_types_name_key;
+        END IF;
+      END $$;
+    `);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS work_types_prod_name_uniq
+        ON work_types(name) WHERE demo_session_id IS NULL
+    `);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS work_types_demo_name_uniq
+        ON work_types(demo_session_id, name) WHERE demo_session_id IS NOT NULL
+    `);
+
     console.log('✅ Connected to Postgres');
   } catch (err) {
     console.error('❌ Postgres init failed:', err.message);
