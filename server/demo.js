@@ -171,7 +171,7 @@ async function seedEstate(pool, sessionId, culture, unit) {
   );
   await pool.query(
     `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, brigadier_id, demo_session_id)
-     VALUES ($1, 'demo', '2', NULL, 'Сидоров', NULL, 0, 'Опрыскивание', 'hectares', 5, 0, $2)`,
+     VALUES ($1, 'demo', '2', '', 'Сидоров', '', 0, 'Опрыскивание', 'hectares', 5, 0, $2)`,
     [dayBefore, sessionId]
   );
 }
