@@ -310,6 +310,15 @@ if (DEMO_MODE) {
       res.status(500).json({ error: err.message });
     }
   });
+
+  // Все API кроме /api/demo/session и /api/config требуют валидной сессии.
+  const requireDemo = demo.requireDemoSession(pool);
+  app.use((req, res, next) => {
+    if (!req.path.startsWith('/api/')) return next();
+    if (req.path === '/api/demo/session') return next();
+    if (req.path === '/api/config') return next();
+    return requireDemo(req, res, next);
+  });
 }
 
 // API endpoints

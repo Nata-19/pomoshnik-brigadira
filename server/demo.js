@@ -61,6 +61,29 @@ async function createSessionWithSeed(pool) {
   return sessionId;
 }
 
+// Middleware: требует валидный demo_session cookie. Прикрепляет req.demo_session_id.
+// Возвращает 401 если cookie нет или сессия не найдена.
+function requireDemoSession(pool) {
+  return async (req, res, next) => {
+    try {
+      const sessionId = req.cookies && req.cookies[COOKIE_NAME];
+      if (!sessionId) {
+        return res.status(401).json({ error: 'no demo session', action: 'create_session' });
+      }
+      const r = await pool.query('SELECT id, culture, unit FROM demo_sessions WHERE id=$1', [sessionId]);
+      if (r.rows.length === 0) {
+        return res.status(401).json({ error: 'demo session expired', action: 'create_session' });
+      }
+      req.demo_session_id = sessionId;
+      req.demo_session = r.rows[0];
+      next();
+    } catch (err) {
+      console.error('requireDemoSession error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  };
+}
+
 module.exports = {
   COOKIE_NAME,
   SEED_EMPLOYEES,
@@ -70,4 +93,5 @@ module.exports = {
   newSessionId,
   createSessionWithSeed,
   DEMO_SESSION_TTL_MS,
+  requireDemoSession,
 };
