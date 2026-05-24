@@ -323,7 +323,7 @@ class BrigadeAssistant {
           <label>Например: виноград, яблоня, черешня, клубника</label>
           <input type="text" id="culture-input" autofocus>
         </div>
-        <button onclick="app.submitCulture()">Продолжить</button>
+        <button id="culture-submit" onclick="app.submitCulture()">Продолжить</button>
         <div id="culture-msg" class="auth-msg"></div>
       </div>
     `;
@@ -332,7 +332,10 @@ class BrigadeAssistant {
   async submitCulture() {
     const culture = document.getElementById('culture-input').value.trim();
     const msg = document.getElementById('culture-msg');
+    const btn = document.getElementById('culture-submit');
     if (!culture) { msg.textContent = '❌ Укажи культуру'; return; }
+    msg.textContent = '⏳ Готовим твою песочницу…';
+    if (btn) btn.disabled = true;
     try {
       const r = await fetch('/api/demo/culture', {
         method: 'POST',
@@ -344,9 +347,16 @@ class BrigadeAssistant {
         this.renderUnitChoice(culture);
         return;
       }
-      if (!r.ok) { msg.textContent = '❌ ' + (data.error || 'Ошибка'); return; }
+      if (!r.ok) {
+        msg.textContent = '❌ ' + (data.error || 'Ошибка');
+        if (btn) btn.disabled = false;
+        return;
+      }
       location.reload();
-    } catch (e) { msg.textContent = '❌ ' + e.message; }
+    } catch (e) {
+      msg.textContent = '❌ ' + e.message;
+      if (btn) btn.disabled = false;
+    }
   }
 
   renderUnitChoice(culture) {
@@ -359,11 +369,14 @@ class BrigadeAssistant {
         <button onclick="app.submitCultureWithUnit('${culture}', 'bush')">🌱 Кусты</button>
         <button onclick="app.submitCultureWithUnit('${culture}', 'tree')">🌳 Деревья</button>
         <button onclick="app.submitCultureWithUnit('${culture}', 'other')">🌾 Другое (растения)</button>
+        <div id="unit-msg" class="auth-msg"></div>
       </div>
     `;
   }
 
   async submitCultureWithUnit(culture, unit) {
+    const msg = document.getElementById('unit-msg');
+    if (msg) msg.textContent = '⏳ Готовим твою песочницу…';
     await fetch('/api/demo/culture', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
