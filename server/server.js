@@ -283,6 +283,35 @@ function setAuthCookie(res, token) {
   });
 }
 
+// === DEMO endpoints ===
+const demo = DEMO_MODE ? require('./demo') : null;
+
+if (DEMO_MODE) {
+  app.post('/api/demo/session', async (req, res) => {
+    try {
+      const existing = req.cookies && req.cookies[demo.COOKIE_NAME];
+      if (existing) {
+        const r = await pool.query('SELECT id FROM demo_sessions WHERE id=$1', [existing]);
+        if (r.rows.length > 0) {
+          return res.json({ session_id: existing, isNew: false });
+        }
+        // cookie указывает на исчезнувшую сессию — выдадим новую
+      }
+      const sessionId = await demo.createSessionWithSeed(pool);
+      res.cookie(demo.COOKIE_NAME, sessionId, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+        maxAge: demo.DEMO_SESSION_TTL_MS,
+      });
+      res.json({ session_id: sessionId, isNew: true });
+    } catch (err) {
+      console.error('demo/session error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+}
+
 // API endpoints
 app.get('/api/estates', requireAuthMw, (req, res) => {
   const estates = Object.keys(inventory.estates).map(id => ({
