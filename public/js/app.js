@@ -295,9 +295,11 @@ class BrigadeAssistant {
     root.innerHTML = `
       <div class="container">
         <div class="app-header">
+          ${window.DemoUI.renderDemoBanner(this.config)}
           <h1>${this.config.brandLogo} ${this.config.brandName}</h1>
           <div class="app-user">
             <span>${this.escapeHtml(this.me ? this.me.login : '')}</span>
+            ${this.config.demoMode ? window.DemoUI.renderDemoResetButton() : ''}
             <button class="logout-btn" onclick="app.logout()">Выйти</button>
             <select id="estate-sel" class="estate-chip" required onchange="app.onEstateChange()">
               <option value="">📍 Выбор хозяйства</option>
@@ -820,6 +822,16 @@ class BrigadeAssistant {
   async logout() {
     try { await fetch('/api/logout', { method: 'POST' }); } catch (e) {}
     location.reload();
+  }
+
+  async resetDemo() {
+    if (!confirm('Точно? Все твои записи удалятся, начнётся новая чистая сессия.')) return;
+    try {
+      await fetch('/api/demo/reset', { method: 'POST' });
+      location.reload();
+    } catch (e) {
+      alert('Не удалось сбросить: ' + e.message);
+    }
   }
 
   async loadBrigadiers() {
