@@ -354,56 +354,71 @@ if (DEMO_MODE) {
 
 // API endpoints
 app.get('/api/estates', authOrDemo, async (req, res) => {
-  if (DEMO_MODE) {
-    const inv = await demo.getDemoInventory(pool, req.demo_session_id);
-    const estates = Object.keys(inv.estates).map(id => ({ id, name: inv.estates[id].name }));
-    return res.json(estates);
+  try {
+    if (DEMO_MODE) {
+      const inv = await demo.getDemoInventory(pool, req.demo_session_id);
+      const estates = Object.keys(inv.estates).map(id => ({ id, name: inv.estates[id].name }));
+      return res.json(estates);
+    }
+    const estates = Object.keys(inventory.estates).map(id => ({
+      id,
+      name: inventory.estates[id].name
+    }));
+    res.json(estates);
+  } catch (err) {
+    console.error('GET /api/estates error:', err);
+    res.status(500).json({ error: err.message });
   }
-  const estates = Object.keys(inventory.estates).map(id => ({
-    id,
-    name: inventory.estates[id].name
-  }));
-  res.json(estates);
 });
 
 app.get('/api/quarters', authOrDemo, async (req, res) => {
-  const estateId = req.query.estate;
-  if (!estateId) {
-    return res.status(400).json({ error: 'Укажи estate' });
+  try {
+    const estateId = req.query.estate;
+    if (!estateId) {
+      return res.status(400).json({ error: 'Укажи estate' });
+    }
+    let estate;
+    if (DEMO_MODE) {
+      const inv = await demo.getDemoInventory(pool, req.demo_session_id);
+      estate = inv.estates[estateId];
+    } else {
+      estate = inventory.estates[estateId];
+    }
+    if (!estate) {
+      return res.status(404).json({ error: 'Хозяйство не найдено' });
+    }
+    const quarters = Object.keys(estate.quarters).map(key => ({
+      id: key,
+      name: estate.quarters[key].name
+    }));
+    res.json(quarters);
+  } catch (err) {
+    console.error('GET /api/quarters error:', err);
+    res.status(500).json({ error: err.message });
   }
-  let estate;
-  if (DEMO_MODE) {
-    const inv = await demo.getDemoInventory(pool, req.demo_session_id);
-    estate = inv.estates[estateId];
-  } else {
-    estate = inventory.estates[estateId];
-  }
-  if (!estate) {
-    return res.status(404).json({ error: 'Хозяйство не найдено' });
-  }
-  const quarters = Object.keys(estate.quarters).map(key => ({
-    id: key,
-    name: estate.quarters[key].name
-  }));
-  res.json(quarters);
 });
 
 app.get('/api/inventory/:estate/:quarter', authOrDemo, async (req, res) => {
-  let estate;
-  if (DEMO_MODE) {
-    const inv = await demo.getDemoInventory(pool, req.demo_session_id);
-    estate = inv.estates[req.params.estate];
-  } else {
-    estate = inventory.estates[req.params.estate];
+  try {
+    let estate;
+    if (DEMO_MODE) {
+      const inv = await demo.getDemoInventory(pool, req.demo_session_id);
+      estate = inv.estates[req.params.estate];
+    } else {
+      estate = inventory.estates[req.params.estate];
+    }
+    if (!estate) {
+      return res.status(404).json({ error: 'Estate not found' });
+    }
+    const quarter = estate.quarters[req.params.quarter];
+    if (!quarter) {
+      return res.status(404).json({ error: 'Quarter not found' });
+    }
+    res.json(quarter);
+  } catch (err) {
+    console.error('GET /api/inventory error:', err);
+    res.status(500).json({ error: err.message });
   }
-  if (!estate) {
-    return res.status(404).json({ error: 'Estate not found' });
-  }
-  const quarter = estate.quarters[req.params.quarter];
-  if (!quarter) {
-    return res.status(404).json({ error: 'Quarter not found' });
-  }
-  res.json(quarter);
 });
 
 // Обработка ввода данных (текстовый формат)
