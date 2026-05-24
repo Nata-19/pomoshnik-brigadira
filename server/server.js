@@ -53,6 +53,7 @@ if (!process.env.DATABASE_URL) {
 // (например, имя его endpoint типа 'ep-cool-cloud-xxx'). Задаётся в env
 // демо-деплоя. Если задано и совпадает в DATABASE_URL — отказ запуска.
 const { DEMO_MODE } = require('./config');
+const { BRAND_NAME, BRAND_LOGO, CONTACT_PHONE, MEASURE_MODES } = require('./config');
 const prodFingerprint = process.env.PROD_DB_FINGERPRINT || '';
 if (DEMO_MODE && prodFingerprint && process.env.DATABASE_URL.includes(prodFingerprint)) {
   console.error('❌ DEMO_MODE=true И DATABASE_URL содержит PROD_DB_FINGERPRINT — это похоже на боевую БД. Запуск отменён.');
@@ -289,6 +290,16 @@ function setAuthCookie(res, token) {
     maxAge: 365 * 24 * 60 * 60 * 1000,
   });
 }
+
+app.get('/api/config', (req, res) => {
+  res.json({
+    demoMode: DEMO_MODE,
+    brandName: BRAND_NAME,
+    brandLogo: BRAND_LOGO,
+    contactPhone: CONTACT_PHONE,
+    measureModes: MEASURE_MODES,
+  });
+});
 
 // === DEMO endpoints ===
 const demo = DEMO_MODE ? require('./demo') : null;
