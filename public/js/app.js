@@ -22,6 +22,7 @@ class BrigadeAssistant {
   }
 
   async init() {
+    await this.loadConfig();
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(e => console.log('SW error:', e));
     }
@@ -67,6 +68,15 @@ class BrigadeAssistant {
       throw new Error('Требуется вход');
     }
     return r;
+  }
+
+  async loadConfig() {
+    try {
+      const r = await fetch('/api/config');
+      this.config = await r.json();
+    } catch (e) {
+      this.config = { demoMode: false, brandName: 'Помощьник Бригадира', brandLogo: '🍇' };
+    }
   }
 
   async loadEstates() {
@@ -215,7 +225,7 @@ class BrigadeAssistant {
     const isReg = this.authMode === 'register';
     root.innerHTML = `
       <div class="container auth-box">
-        <h1>🍇 Помощьник Бригадира</h1>
+        <h1>${this.config.brandLogo} ${this.config.brandName}</h1>
         <div class="tabs">
           <button class="tab-button ${isReg ? '' : 'active'}" onclick="app.renderAuth('login')">Войти</button>
           <button class="tab-button ${isReg ? 'active' : ''}" onclick="app.renderAuth('register')">Зарегистрироваться</button>
@@ -285,7 +295,7 @@ class BrigadeAssistant {
     root.innerHTML = `
       <div class="container">
         <div class="app-header">
-          <h1>🍇 Помощьник Бригадира</h1>
+          <h1>${this.config.brandLogo} ${this.config.brandName}</h1>
           <div class="app-user">
             <span>${this.escapeHtml(this.me ? this.me.login : '')}</span>
             <button class="logout-btn" onclick="app.logout()">Выйти</button>
