@@ -61,10 +61,30 @@ async function createSessionWithSeed(pool) {
   return sessionId;
 }
 
+let lastCleanup = 0;
+const CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // не чаще раза в 10 минут
+
+async function maybeCleanup(pool) {
+  const now = Date.now();
+  if (now - lastCleanup < CLEANUP_INTERVAL_MS) return;
+  lastCleanup = now;
+  try {
+    const r = await pool.query(
+      `DELETE FROM demo_sessions WHERE created_at < NOW() - INTERVAL '24 hours' RETURNING id`
+    );
+    if (r.rows.length > 0) {
+      console.log(`🧹 Demo cleanup: удалено ${r.rows.length} устаревших сессий`);
+    }
+  } catch (err) {
+    console.error('demo cleanup error:', err);
+  }
+}
+
 // Middleware: требует валидный demo_session cookie. Прикрепляет req.demo_session_id.
 // Возвращает 401 если cookie нет или сессия не найдена.
 function requireDemoSession(pool) {
   return async (req, res, next) => {
+    await maybeCleanup(pool); // не чаще раза в 10 минут
     try {
       const sessionId = req.cookies && req.cookies[COOKIE_NAME];
       if (!sessionId) {
