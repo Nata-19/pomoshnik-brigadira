@@ -659,4 +659,49 @@ button:active {
   background: #fff5f5;
   border-color: #c0392b;
 }
+
+/* === Плашка «Всего за день» === */
+.daily-totals { background: #fafffa; }
+.total-wt-block { margin-bottom: 8px; }
+.total-wt-block:last-of-type { margin-bottom: 4px; }
+.total-wt-head {
+  font-weight: 600;
+  color: #2c3e50;
+  margin-bottom: 3px;
+  font-size: 0.95rem;
+}
+.total-cell-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 3px 8px;
+  font-size: 0.92rem;
+  color: #444;
+  border-top: 1px dashed #e6e6e6;
+}
+.total-cell-row:first-of-type { border-top: none; }
+.total-cell-row > span:first-child {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.total-cell-row > span:last-child {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+.total-final {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 8px 0 8px;
+  margin-top: 6px;
+  border-top: 2px solid #b0c4b0;
+  font-weight: 700;
+  font-size: 0.98rem;
+  color: #2c3e50;
+}
 .demo-reset-btn:hover { background: #4a8fc2; }

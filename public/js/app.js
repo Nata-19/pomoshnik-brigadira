@@ -530,6 +530,11 @@ class BrigadeAssistant {
         <div class="block-label">Записи за ${this.escapeHtml(this.inputDate)}</div>
         <div id="i2-entries">${this.renderEntriesHtml()}</div>
       </div>
+
+      <div class="ctx-block daily-totals">
+        <div class="block-label">Всего за день</div>
+        <div id="i2-totals">${this.renderDailyTotalsHtml()}</div>
+      </div>
     `;
     this.refreshI2Cells();
   }
@@ -634,6 +639,46 @@ class BrigadeAssistant {
   // В Part B будет читать unit из quarter и возвращать «кустов»/«деревьев»/«растений».
   getUnitLabel(log) {
     return 'кустов';
+  }
+
+  // Плашка «Всего за день» на Вводе данных.
+  // Группировка: вид работ → квартал/клетка. Суммы рядов и кустов по записям rows_bushes/rows_only.
+  // Часовые/гектарные/километровые записи в эту плашку не входят (для них есть отдельный отчёт).
+  renderDailyTotalsHtml() {
+    if (!this.entries || this.entries.length === 0) {
+      return '<p class="chips-empty">Пока пусто.</p>';
+    }
+    const byWt = new Map();
+    let totalRows = 0;
+    let totalBushes = 0;
+    for (const log of this.entries) {
+      if (log.measure_mode !== 'rows_bushes' && log.measure_mode !== 'rows_only') continue;
+      const rowCount = String(log.rows || '').split(',').filter(x => x.trim()).length;
+      const bushes = Number(log.bushes) || 0;
+      totalRows += rowCount;
+      totalBushes += bushes;
+      const wt = log.work_type || '—';
+      if (!byWt.has(wt)) byWt.set(wt, new Map());
+      const byCell = byWt.get(wt);
+      const cellKey = `Кв.${log.quarter || '?'}, клет.${log.cell || '?'}`;
+      if (!byCell.has(cellKey)) byCell.set(cellKey, { rows: 0, bushes: 0 });
+      const agg = byCell.get(cellKey);
+      agg.rows += rowCount;
+      agg.bushes += bushes;
+    }
+    if (byWt.size === 0) {
+      return '<p class="chips-empty">Ручных записей пока нет.</p>';
+    }
+    const wtBlocks = [];
+    for (const [wt, byCell] of byWt) {
+      const cellLines = [];
+      for (const [cellKey, agg] of byCell) {
+        cellLines.push(`<div class="total-cell-row"><span>${this.escapeHtml(cellKey)}</span><span>${agg.rows} рядов, ${agg.bushes} кустов</span></div>`);
+      }
+      wtBlocks.push(`<div class="total-wt-block"><div class="total-wt-head">${this.escapeHtml(wt)}</div>${cellLines.join('')}</div>`);
+    }
+    const totalsLine = `<div class="total-final"><span>Итого:</span><span>${totalRows} рядов, ${totalBushes} кустов</span></div>`;
+    return wtBlocks.join('') + totalsLine;
   }
 
   // HTML карточек записей за выбранную дату.
