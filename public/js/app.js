@@ -597,7 +597,7 @@ class BrigadeAssistant {
   }
 
   // Рисует список групп записей в новом формате.
-  // deleteFnName — строка с именем метода удаления ('deleteEntry' на input-tab, 'deleteLog' на journal-tab).
+  // deleteFnName — строка с именем метода удаления ('deleteEntry' / 'deleteLog'), или null/'' если кнопку удаления не нужна (отчёт за период).
   // Возвращает готовый HTML строкой.
   renderLogGroupsHtml(groups, deleteFnName) {
     if (!groups || groups.length === 0) {
@@ -624,10 +624,13 @@ class BrigadeAssistant {
             measure += `, ${w.bushes} ${label}`;
           }
         }
+        const deleteBtn = deleteFnName
+          ? `<button class="delete-btn-mini" onclick="app.${deleteFnName}(${w.id})">✕</button>`
+          : '';
         return `
           <div class="log-worker-row">
             <span class="log-worker-name">${this.escapeHtml(w.employee)} — ${measure}</span>
-            <button class="delete-btn-mini" onclick="app.${deleteFnName}(${w.id})">✕</button>
+            ${deleteBtn}
           </div>
         `;
       }).join('');
@@ -992,18 +995,26 @@ class BrigadeAssistant {
       return;
     }
 
-    this.showResult('⏳ Загрузка отчёта...', false, resultDiv);
+    resultDiv.style.display = 'block';
+    resultDiv.classList.remove('error', 'success');
+    resultDiv.innerHTML = '<p style="padding:10px;">⏳ Загрузка отчёта...</p>';
 
     try {
-      const response = await fetch(`/api/report?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&estate=${encodeURIComponent(this.estate)}`);
-      const data = await response.json();
-      if (response.ok) {
-        this.showResult(data.report, false, resultDiv);
-      } else {
-        this.showResult('❌ ' + (data.error || 'Не удалось получить отчёт'), true, resultDiv);
+      const r = await fetch(`/api/logs?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&estate=${encodeURIComponent(this.estate)}`);
+      const data = await r.json();
+      if (!r.ok) {
+        resultDiv.innerHTML = '<p style="color:#c0392b;padding:10px;">❌ ' + (data.error || 'Не удалось получить отчёт') + '</p>';
+        return;
       }
-    } catch (error) {
-      this.showResult('❌ ' + error.message, true, resultDiv);
+      if (!data.logs || data.logs.length === 0) {
+        resultDiv.innerHTML = '<p style="color:#888;padding:10px;">За этот период записей нет.</p>';
+        return;
+      }
+      const groups = this.groupLogsForDisplay(data.logs);
+      const header = `<div class="report-header">Отчёт с ${this.escapeHtml(from)} по ${this.escapeHtml(to)}</div>`;
+      resultDiv.innerHTML = header + this.renderLogGroupsHtml(groups, null);
+    } catch (e) {
+      resultDiv.innerHTML = '<p style="color:#c0392b;padding:10px;">❌ ' + e.message + '</p>';
     }
   }
 

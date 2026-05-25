@@ -692,4 +692,12 @@ button:active {
   flex: 0 0 auto;
   font-variant-numeric: tabular-nums;
 }
+.report-header {
+  font-weight: 700;
+  color: #2c3e50;
+  font-size: 1rem;
+  padding: 6px 8px 10px 8px;
+  border-bottom: 1px solid #ddd;
+  margin-bottom: 8px;
+}
 .demo-reset-btn:hover { background: #4a8fc2; }
