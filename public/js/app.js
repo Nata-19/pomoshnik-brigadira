@@ -560,6 +560,37 @@ class BrigadeAssistant {
     `;
   }
 
+  // Группирует плоский массив log-записей в структуру для отображения:
+  // [ { work_type, quarter, cell, workers: [{ employee, measure_mode, rows, bushes, hours, hectares, kilometers, id }] }, ... ]
+  // Сортировка: вид работ алфавитно, внутри — квартал, клетка.
+  // Пустые quarter/cell (часовые/механизированные без клетки) попадают в свою группу.
+  groupLogsForDisplay(logs) {
+    if (!logs || logs.length === 0) return [];
+    const groups = new Map();
+    for (const log of logs) {
+      const wt = log.work_type || '';
+      const q = log.quarter || '';
+      const c = log.cell || '';
+      const key = `${wt}||${q}||${c}`;
+      if (!groups.has(key)) {
+        groups.set(key, { work_type: wt, quarter: q, cell: c, workers: [] });
+      }
+      groups.get(key).workers.push(log);
+    }
+    const arr = Array.from(groups.values());
+    arr.sort((a, b) => {
+      const byWt = (a.work_type || '').localeCompare(b.work_type || '', 'ru');
+      if (byWt !== 0) return byWt;
+      const aq = Number(a.quarter) || 0;
+      const bq = Number(b.quarter) || 0;
+      if (aq !== bq) return aq - bq;
+      const ac = Number(a.cell) || 0;
+      const bc = Number(b.cell) || 0;
+      return ac - bc;
+    });
+    return arr;
+  }
+
   // HTML карточек записей за выбранную дату.
   renderEntriesHtml() {
     if (!this.entries || this.entries.length === 0) {
