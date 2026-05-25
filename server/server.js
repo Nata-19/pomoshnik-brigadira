@@ -48,6 +48,18 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
+// Защита от случайного включения DEMO_MODE с боевой БД.
+// PROD_DB_FINGERPRINT — короткая подстрока из connection string боевого Neon
+// (например, имя его endpoint типа 'ep-cool-cloud-xxx'). Задаётся в env
+// демо-деплоя. Если задано и совпадает в DATABASE_URL — отказ запуска.
+const { DEMO_MODE } = require('./config');
+const { BRAND_NAME, BRAND_LOGO, CONTACT_PHONE, MEASURE_MODES } = require('./config');
+const prodFingerprint = process.env.PROD_DB_FINGERPRINT || '';
+if (DEMO_MODE && prodFingerprint && process.env.DATABASE_URL.includes(prodFingerprint)) {
+  console.error('❌ DEMO_MODE=true И DATABASE_URL содержит PROD_DB_FINGERPRINT — это похоже на боевую БД. Запуск отменён.');
+  process.exit(1);
+}
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
@@ -161,6 +173,89 @@ const getSecret = () => SESSION_SECRET;
         END IF;
       END $$;
     `);
+
+    // --- Демо-режим: таблицы и колонки для изолированных сессий ---
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS demo_sessions (
+        id TEXT PRIMARY KEY,
+        culture TEXT,
+        unit TEXT,
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS demo_session_id TEXT REFERENCES demo_sessions(id) ON DELETE CASCADE`);
+    await pool.query(`ALTER TABLE work_types ADD COLUMN IF NOT EXISTS demo_session_id TEXT REFERENCES demo_sessions(id) ON DELETE CASCADE`);
+    await pool.query(`ALTER TABLE work_types ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'manual'`);
+    await pool.query(`ALTER TABLE work_types ADD COLUMN IF NOT EXISTS default_measure_mode TEXT NOT NULL DEFAULT 'rows_bushes'`);
+    await pool.query(`ALTER TABLE attendance ADD COLUMN IF NOT EXISTS demo_session_id TEXT REFERENCES demo_sessions(id) ON DELETE CASCADE`);
+    await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS demo_session_id TEXT REFERENCES demo_sessions(id) ON DELETE CASCADE`);
+
+    // Инвентарь демо — в БД, не в JSON-файле, чтобы каждая сессия имела свой.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS demo_quarters (
+        id SERIAL PRIMARY KEY,
+        demo_session_id TEXT NOT NULL REFERENCES demo_sessions(id) ON DELETE CASCADE,
+        quarter_key TEXT NOT NULL,
+        name TEXT NOT NULL,
+        unit TEXT NOT NULL,
+        UNIQUE (demo_session_id, quarter_key)
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS demo_cells (
+        id SERIAL PRIMARY KEY,
+        quarter_id INTEGER NOT NULL REFERENCES demo_quarters(id) ON DELETE CASCADE,
+        cell_key TEXT NOT NULL,
+        hectares NUMERIC(10,2),
+        UNIQUE (quarter_id, cell_key)
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS demo_rows (
+        id SERIAL PRIMARY KEY,
+        cell_id INTEGER NOT NULL REFERENCES demo_cells(id) ON DELETE CASCADE,
+        row_num INTEGER NOT NULL,
+        bushes INTEGER NOT NULL,
+        UNIQUE (cell_id, row_num)
+      )
+    `);
+
+    // Расширяем CHECK measure_mode (старый ограничивал 3 значениями — теперь надо
+    // 11). Дропаем старый, добавляем новый.
+    await pool.query(`
+      DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_measure_mode') THEN
+          ALTER TABLE work_logs DROP CONSTRAINT chk_measure_mode;
+        END IF;
+        ALTER TABLE work_logs ADD CONSTRAINT chk_measure_mode
+          CHECK (measure_mode IN (
+            'rows_bushes', 'rows_only', 'hours', 'hectares', 'kilometers',
+            'poles', 'tons', 'linear_meters', 'tons_km', 'hours_km', 'hectares_tons'
+          ));
+      END $$;
+    `);
+
+    // Уникальность work_types.name — теперь по паре (demo_session_id, name).
+    // В проде demo_session_id NULL, и нам нужна уникальность только по name среди NULL.
+    // PostgreSQL: NULL не сравниваются, поэтому два work_types с одинаковым name и
+    // demo_session_id=NULL пройдут UNIQUE. Чтобы прод сохранил эксклюзивность,
+    // делаем два partial-unique-index'а.
+    await pool.query(`
+      DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'work_types_name_key') THEN
+          ALTER TABLE work_types DROP CONSTRAINT work_types_name_key;
+        END IF;
+      END $$;
+    `);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS work_types_prod_name_uniq
+        ON work_types(name) WHERE demo_session_id IS NULL
+    `);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS work_types_demo_name_uniq
+        ON work_types(demo_session_id, name) WHERE demo_session_id IS NOT NULL
+    `);
+
     console.log('✅ Connected to Postgres');
   } catch (err) {
     console.error('❌ Postgres init failed:', err.message);
@@ -180,6 +275,13 @@ const parser = new DataParser(inventory);
 // Middleware «требуется вход» — переиспользуется на всех защищённых маршрутах.
 const requireAuthMw = auth.requireAuth(pool, getSecret);
 
+// В демо-режиме requireDemo (глобальный) уже отработал и положил req.demo_session_id.
+// В проде — используем обычный requireAuthMw. Эта обёртка применяется на data-endpoints.
+function authOrDemo(req, res, next) {
+  if (DEMO_MODE) return next();
+  return requireAuthMw(req, res, next);
+}
+
 function setAuthCookie(res, token) {
   res.cookie('token', token, {
     httpOnly: true,
@@ -189,45 +291,164 @@ function setAuthCookie(res, token) {
   });
 }
 
+app.get('/api/config', (req, res) => {
+  res.json({
+    demoMode: DEMO_MODE,
+    brandName: BRAND_NAME,
+    brandLogo: BRAND_LOGO,
+    contactPhone: CONTACT_PHONE,
+    measureModes: MEASURE_MODES,
+  });
+});
+
+// === DEMO endpoints ===
+const demo = DEMO_MODE ? require('./demo') : null;
+
+if (DEMO_MODE) {
+  app.post('/api/demo/session', async (req, res) => {
+    try {
+      const existing = req.cookies && req.cookies[demo.COOKIE_NAME];
+      if (existing) {
+        const r = await pool.query('SELECT id FROM demo_sessions WHERE id=$1', [existing]);
+        if (r.rows.length > 0) {
+          return res.json({ session_id: existing, isNew: false });
+        }
+        // cookie указывает на исчезнувшую сессию — выдадим новую
+      }
+      const sessionId = await demo.createSessionWithSeed(pool);
+      res.cookie(demo.COOKIE_NAME, sessionId, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+        maxAge: demo.DEMO_SESSION_TTL_MS,
+      });
+      res.json({ session_id: sessionId, isNew: true });
+    } catch (err) {
+      console.error('demo/session error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Все API кроме /api/demo/session и /api/config требуют валидной сессии.
+  const requireDemo = demo.requireDemoSession(pool);
+  app.use((req, res, next) => {
+    if (!req.path.startsWith('/api/')) return next();
+    if (req.path === '/api/demo/session') return next();
+    if (req.path === '/api/config') return next();
+    return requireDemo(req, res, next);
+  });
+
+  app.post('/api/demo/culture', requireDemo, async (req, res) => {
+    try {
+      const { culture, unit } = req.body;
+      if (!culture || !culture.trim()) {
+        return res.status(400).json({ error: 'Укажи культуру' });
+      }
+      if (req.demo_session.culture) {
+        return res.status(400).json({ error: 'Культура уже выбрана для этой сессии' });
+      }
+      const detectedUnit = unit || demo.detectUnit(culture);
+      if (!detectedUnit) {
+        return res.json({ needUnit: true });
+      }
+      if (!['bush', 'tree', 'other'].includes(detectedUnit)) {
+        return res.status(400).json({ error: 'unit должен быть bush/tree/other' });
+      }
+      await demo.seedEstate(pool, req.demo_session_id, culture.trim(), detectedUnit);
+      res.json({ culture: culture.trim(), unit: detectedUnit });
+    } catch (err) {
+      console.error('demo/culture error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/demo/reset', requireDemo, async (req, res) => {
+    try {
+      await pool.query('DELETE FROM demo_sessions WHERE id=$1', [req.demo_session_id]);
+      const newId = await demo.createSessionWithSeed(pool);
+      res.cookie(demo.COOKIE_NAME, newId, {
+        httpOnly: true, secure: true, sameSite: 'lax',
+        maxAge: demo.DEMO_SESSION_TTL_MS,
+      });
+      res.json({ session_id: newId });
+    } catch (err) {
+      console.error('demo/reset error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+}
+
 // API endpoints
-app.get('/api/estates', requireAuthMw, (req, res) => {
-  const estates = Object.keys(inventory.estates).map(id => ({
-    id,
-    name: inventory.estates[id].name
-  }));
-  res.json(estates);
+app.get('/api/estates', authOrDemo, async (req, res) => {
+  try {
+    if (DEMO_MODE) {
+      const inv = await demo.getDemoInventory(pool, req.demo_session_id);
+      const estates = Object.keys(inv.estates).map(id => ({ id, name: inv.estates[id].name }));
+      return res.json(estates);
+    }
+    const estates = Object.keys(inventory.estates).map(id => ({
+      id,
+      name: inventory.estates[id].name
+    }));
+    res.json(estates);
+  } catch (err) {
+    console.error('GET /api/estates error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.get('/api/quarters', requireAuthMw, (req, res) => {
-  const estateId = req.query.estate;
-  if (!estateId) {
-    return res.status(400).json({ error: 'Укажи estate' });
+app.get('/api/quarters', authOrDemo, async (req, res) => {
+  try {
+    const estateId = req.query.estate;
+    if (!estateId) {
+      return res.status(400).json({ error: 'Укажи estate' });
+    }
+    let estate;
+    if (DEMO_MODE) {
+      const inv = await demo.getDemoInventory(pool, req.demo_session_id);
+      estate = inv.estates[estateId];
+    } else {
+      estate = inventory.estates[estateId];
+    }
+    if (!estate) {
+      return res.status(404).json({ error: 'Хозяйство не найдено' });
+    }
+    const quarters = Object.keys(estate.quarters).map(key => ({
+      id: key,
+      name: estate.quarters[key].name
+    }));
+    res.json(quarters);
+  } catch (err) {
+    console.error('GET /api/quarters error:', err);
+    res.status(500).json({ error: err.message });
   }
-  const estate = inventory.estates[estateId];
-  if (!estate) {
-    return res.status(404).json({ error: 'Хозяйство не найдено' });
-  }
-  const quarters = Object.keys(estate.quarters).map(key => ({
-    id: key,
-    name: estate.quarters[key].name
-  }));
-  res.json(quarters);
 });
 
-app.get('/api/inventory/:estate/:quarter', requireAuthMw, (req, res) => {
-  const estate = inventory.estates[req.params.estate];
-  if (!estate) {
-    return res.status(404).json({ error: 'Estate not found' });
+app.get('/api/inventory/:estate/:quarter', authOrDemo, async (req, res) => {
+  try {
+    let estate;
+    if (DEMO_MODE) {
+      const inv = await demo.getDemoInventory(pool, req.demo_session_id);
+      estate = inv.estates[req.params.estate];
+    } else {
+      estate = inventory.estates[req.params.estate];
+    }
+    if (!estate) {
+      return res.status(404).json({ error: 'Estate not found' });
+    }
+    const quarter = estate.quarters[req.params.quarter];
+    if (!quarter) {
+      return res.status(404).json({ error: 'Quarter not found' });
+    }
+    res.json(quarter);
+  } catch (err) {
+    console.error('GET /api/inventory error:', err);
+    res.status(500).json({ error: err.message });
   }
-  const quarter = estate.quarters[req.params.quarter];
-  if (!quarter) {
-    return res.status(404).json({ error: 'Quarter not found' });
-  }
-  res.json(quarter);
 });
 
 // Обработка ввода данных (текстовый формат)
-app.post('/api/process', requireAuthMw, async (req, res) => {
+app.post('/api/process', authOrDemo, async (req, res) => {
   try {
     const { date, input, estate, quarter, cell } = req.body;
 
@@ -238,16 +459,34 @@ app.post('/api/process', requireAuthMw, async (req, res) => {
       return res.status(400).json({ error: 'Не выбрано хозяйство' });
     }
 
-    const { entries } = parser.parse(input, date, { estate, quarter, cell });
-    const report = parser.formatReport(date, entries, inventory);
+    let invForParser, parserToUse;
+    if (DEMO_MODE) {
+      invForParser = await demo.getDemoInventory(pool, req.demo_session_id);
+      parserToUse = new DataParser(invForParser);
+    } else {
+      invForParser = inventory;
+      parserToUse = parser;
+    }
+
+    const { entries } = parserToUse.parse(input, date, { estate, quarter, cell });
+    const report = parserToUse.formatReport(date, entries, invForParser);
 
     for (const entry of entries) {
-      await pool.query(
-        `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [date, entry.estate, entry.quarter, entry.cell, entry.employee,
-         entry.rows.join(','), entry.bushes, req.brigadier.id]
-      );
+      if (DEMO_MODE) {
+        await pool.query(
+          `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, demo_session_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [date, entry.estate, entry.quarter, entry.cell, entry.employee,
+           entry.rows.join(','), entry.bushes, 0, req.demo_session_id]
+        );
+      } else {
+        await pool.query(
+          `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [date, entry.estate, entry.quarter, entry.cell, entry.employee,
+           entry.rows.join(','), entry.bushes, req.brigadier.id]
+        );
+      }
     }
 
     res.json({ success: true, report });
@@ -455,23 +694,39 @@ app.post('/api/admin/brigadiers/:id/reset-password', requireAuthMw, auth.require
 });
 
 // --- Этап 2: сотрудники (личный список бригадира) ---
-app.get('/api/employees', requireAuthMw, async (req, res) => {
+app.get('/api/employees', authOrDemo, async (req, res) => {
   try {
-    const r = await pool.query(
-      'SELECT id, name FROM employees WHERE brigadier_id = $1 ORDER BY name',
-      [req.brigadier.id]
-    );
+    let r;
+    if (DEMO_MODE) {
+      r = await pool.query('SELECT id, name FROM employees WHERE demo_session_id=$1 ORDER BY name', [req.demo_session_id]);
+    } else {
+      r = await pool.query('SELECT id, name FROM employees WHERE brigadier_id = $1 ORDER BY name', [req.brigadier.id]);
+    }
     res.json({ employees: r.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/api/employees', requireAuthMw, async (req, res) => {
+app.post('/api/employees', authOrDemo, async (req, res) => {
   try {
     const name = (req.body.name || '').trim();
     if (!name) {
       return res.status(400).json({ error: 'Укажи фамилию' });
+    }
+    if (DEMO_MODE) {
+      const exists = await pool.query(
+        'SELECT 1 FROM employees WHERE demo_session_id = $1 AND name = $2',
+        [req.demo_session_id, name]
+      );
+      if (exists.rows.length > 0) {
+        return res.status(400).json({ error: 'Такой сотрудник уже есть' });
+      }
+      const ins = await pool.query(
+        'INSERT INTO employees (brigadier_id, name, demo_session_id) VALUES ($1, $2, $3) RETURNING id, name',
+        [0, name, req.demo_session_id]
+      );
+      return res.json({ employee: ins.rows[0] });
     }
     const exists = await pool.query(
       'SELECT 1 FROM employees WHERE brigadier_id = $1 AND name = $2',
@@ -493,17 +748,25 @@ app.post('/api/employees', requireAuthMw, async (req, res) => {
   }
 });
 
-app.delete('/api/employees/:id', requireAuthMw, async (req, res) => {
+app.delete('/api/employees/:id', authOrDemo, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isInteger(id)) {
       return res.status(400).json({ error: 'Неверный id' });
     }
     // FK с ON DELETE CASCADE сам уберёт записи явки этого сотрудника.
-    const result = await pool.query(
-      'DELETE FROM employees WHERE id = $1 AND brigadier_id = $2 RETURNING id',
-      [id, req.brigadier.id]
-    );
+    let result;
+    if (DEMO_MODE) {
+      result = await pool.query(
+        'DELETE FROM employees WHERE id = $1 AND demo_session_id = $2 RETURNING id',
+        [id, req.demo_session_id]
+      );
+    } else {
+      result = await pool.query(
+        'DELETE FROM employees WHERE id = $1 AND brigadier_id = $2 RETURNING id',
+        [id, req.brigadier.id]
+      );
+    }
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Сотрудник не найден' });
     }
@@ -514,20 +777,39 @@ app.delete('/api/employees/:id', requireAuthMw, async (req, res) => {
 });
 
 // --- Этап 2: виды работ (общий список) ---
-app.get('/api/work-types', requireAuthMw, async (req, res) => {
+app.get('/api/work-types', authOrDemo, async (req, res) => {
   try {
-    const r = await pool.query('SELECT id, name FROM work_types ORDER BY name');
+    let r;
+    if (DEMO_MODE) {
+      r = await pool.query('SELECT id, name FROM work_types WHERE demo_session_id=$1 ORDER BY name', [req.demo_session_id]);
+    } else {
+      r = await pool.query('SELECT id, name FROM work_types ORDER BY name');
+    }
     res.json({ work_types: r.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/api/work-types', requireAuthMw, async (req, res) => {
+app.post('/api/work-types', authOrDemo, async (req, res) => {
   try {
     const name = (req.body.name || '').trim();
     if (!name) {
       return res.status(400).json({ error: 'Укажи название вида работ' });
+    }
+    if (DEMO_MODE) {
+      const exists = await pool.query(
+        'SELECT 1 FROM work_types WHERE demo_session_id = $1 AND LOWER(name) = LOWER($2)',
+        [req.demo_session_id, name]
+      );
+      if (exists.rows.length > 0) {
+        return res.status(400).json({ error: 'Такой вид работ уже есть' });
+      }
+      const ins = await pool.query(
+        'INSERT INTO work_types (name, demo_session_id) VALUES ($1, $2) RETURNING id, name',
+        [name, req.demo_session_id]
+      );
+      return res.json({ work_type: ins.rows[0] });
     }
     const exists = await pool.query(
       'SELECT 1 FROM work_types WHERE LOWER(name) = LOWER($1)',
@@ -550,26 +832,37 @@ app.post('/api/work-types', requireAuthMw, async (req, res) => {
 });
 
 // --- Этап 2: явка (кто сегодня на работе) ---
-app.get('/api/attendance', requireAuthMw, async (req, res) => {
+app.get('/api/attendance', authOrDemo, async (req, res) => {
   try {
     const date = req.query.date;
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
     }
-    const r = await pool.query(
-      `SELECT a.employee_id, e.name
-       FROM attendance a JOIN employees e ON e.id = a.employee_id
-       WHERE a.brigadier_id = $1 AND a.date = $2
-       ORDER BY e.name`,
-      [req.brigadier.id, date]
-    );
+    let r;
+    if (DEMO_MODE) {
+      r = await pool.query(
+        `SELECT a.employee_id, e.name
+         FROM attendance a JOIN employees e ON e.id = a.employee_id
+         WHERE a.demo_session_id = $1 AND a.date = $2
+         ORDER BY e.name`,
+        [req.demo_session_id, date]
+      );
+    } else {
+      r = await pool.query(
+        `SELECT a.employee_id, e.name
+         FROM attendance a JOIN employees e ON e.id = a.employee_id
+         WHERE a.brigadier_id = $1 AND a.date = $2
+         ORDER BY e.name`,
+        [req.brigadier.id, date]
+      );
+    }
     res.json({ present: r.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/api/attendance', requireAuthMw, async (req, res) => {
+app.post('/api/attendance', authOrDemo, async (req, res) => {
   try {
     const { date, employee_id } = req.body;
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -579,25 +872,40 @@ app.post('/api/attendance', requireAuthMw, async (req, res) => {
     if (!Number.isInteger(eid)) {
       return res.status(400).json({ error: 'Неверный id сотрудника' });
     }
-    const own = await pool.query(
-      'SELECT 1 FROM employees WHERE id = $1 AND brigadier_id = $2',
-      [eid, req.brigadier.id]
-    );
-    if (own.rows.length === 0) {
-      return res.status(404).json({ error: 'Сотрудник не найден' });
+    if (DEMO_MODE) {
+      const own = await pool.query(
+        'SELECT 1 FROM employees WHERE id = $1 AND demo_session_id = $2',
+        [eid, req.demo_session_id]
+      );
+      if (own.rows.length === 0) {
+        return res.status(404).json({ error: 'Сотрудник не найден' });
+      }
+      await pool.query(
+        `INSERT INTO attendance (brigadier_id, date, employee_id, demo_session_id) VALUES ($1, $2, $3, $4)
+         ON CONFLICT DO NOTHING`,
+        [0, date, eid, req.demo_session_id]
+      );
+    } else {
+      const own = await pool.query(
+        'SELECT 1 FROM employees WHERE id = $1 AND brigadier_id = $2',
+        [eid, req.brigadier.id]
+      );
+      if (own.rows.length === 0) {
+        return res.status(404).json({ error: 'Сотрудник не найден' });
+      }
+      await pool.query(
+        `INSERT INTO attendance (brigadier_id, date, employee_id) VALUES ($1, $2, $3)
+         ON CONFLICT DO NOTHING`,
+        [req.brigadier.id, date, eid]
+      );
     }
-    await pool.query(
-      `INSERT INTO attendance (brigadier_id, date, employee_id) VALUES ($1, $2, $3)
-       ON CONFLICT DO NOTHING`,
-      [req.brigadier.id, date, eid]
-    );
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.delete('/api/attendance', requireAuthMw, async (req, res) => {
+app.delete('/api/attendance', authOrDemo, async (req, res) => {
   try {
     const { date, employee_id } = req.body;
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -607,10 +915,17 @@ app.delete('/api/attendance', requireAuthMw, async (req, res) => {
     if (!Number.isInteger(eid)) {
       return res.status(400).json({ error: 'Неверный id сотрудника' });
     }
-    await pool.query(
-      'DELETE FROM attendance WHERE brigadier_id = $1 AND date = $2 AND employee_id = $3',
-      [req.brigadier.id, date, eid]
-    );
+    if (DEMO_MODE) {
+      await pool.query(
+        'DELETE FROM attendance WHERE demo_session_id = $1 AND date = $2 AND employee_id = $3',
+        [req.demo_session_id, date, eid]
+      );
+    } else {
+      await pool.query(
+        'DELETE FROM attendance WHERE brigadier_id = $1 AND date = $2 AND employee_id = $3',
+        [req.brigadier.id, date, eid]
+      );
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -618,14 +933,24 @@ app.delete('/api/attendance', requireAuthMw, async (req, res) => {
 });
 
 // --- Этап 2: создание одной записи журнала (структурированный ввод) ---
-app.post('/api/logs', requireAuthMw, async (req, res) => {
+app.post('/api/logs', authOrDemo, async (req, res) => {
   try {
     const { date, estate, quarter, cell, work_type, measure_mode, employee, rows, hours } = req.body;
 
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
     }
-    if (!estate || !inventory.estates[estate]) {
+
+    let invForParser, parserToUse;
+    if (DEMO_MODE) {
+      invForParser = await demo.getDemoInventory(pool, req.demo_session_id);
+      parserToUse = new DataParser(invForParser);
+    } else {
+      invForParser = inventory;
+      parserToUse = parser;
+    }
+
+    if (!estate || !invForParser.estates[estate]) {
       return res.status(400).json({ error: 'Не выбрано хозяйство' });
     }
     if (!employee || !employee.trim()) {
@@ -654,14 +979,14 @@ app.post('/api/logs', requireAuthMw, async (req, res) => {
       }
       let rowNums;
       try {
-        rowNums = parser.parseRowList(rows);
+        rowNums = parserToUse.parseRowList(rows);
       } catch (e) {
         return res.status(400).json({ error: e.message });
       }
       rowsStr = rowNums.join(',');
       if (measure_mode === 'rows_bushes') {
         try {
-          bushes = parser.getBushesCount(estate, String(quarter), String(cell), rowNums);
+          bushes = parserToUse.getBushesCount(estate, String(quarter), String(cell), rowNums);
         } catch (e) {
           return res.status(400).json({ error: e.message });
         }
@@ -672,6 +997,36 @@ app.post('/api/logs', requireAuthMw, async (req, res) => {
     // создана в последние 10 секунд — отказываем. Случайный повторный тап
     // через несколько секунд после ответа не пройдёт, а намеренная одинаковая
     // запись позже этого окна — пройдёт.
+    if (DEMO_MODE) {
+      const dup = await pool.query(
+        `SELECT id FROM work_logs
+         WHERE demo_session_id = $1 AND date = $2 AND estate_id = $3
+           AND quarter = $4 AND cell = $5 AND employee = $6
+           AND work_type = $7 AND measure_mode = $8
+           AND COALESCE(rows, '') = COALESCE($9, '')
+           AND COALESCE(hours, -1) = COALESCE($10, -1)
+           AND created_at > NOW() - INTERVAL '10 seconds'
+         LIMIT 1`,
+        [req.demo_session_id, date, estate,
+         quarter ? String(quarter) : '', cell ? String(cell) : '',
+         employee.trim(), work_type.trim(), measure_mode,
+         rowsStr, hoursVal]
+      );
+      if (dup.rows.length > 0) {
+        return res.status(409).json({ error: 'Такая же запись только что добавлена' });
+      }
+      const ins = await pool.query(
+        `INSERT INTO work_logs
+          (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, demo_session_id, work_type, measure_mode, hours)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         RETURNING id`,
+        [date, estate, quarter ? String(quarter) : '', cell ? String(cell) : '',
+         employee.trim(), rowsStr, bushes, 0, req.demo_session_id,
+         work_type.trim(), measure_mode, hoursVal]
+      );
+      return res.json({ success: true, id: ins.rows[0].id });
+    }
+
     const dup = await pool.query(
       `SELECT id FROM work_logs
        WHERE brigadier_id = $1 AND date = $2 AND estate_id = $3
@@ -710,32 +1065,55 @@ app.post('/api/logs', requireAuthMw, async (req, res) => {
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 // Список записей за день (для журнала + удаления). Фильтр по хозяйству обязателен.
-app.get('/api/logs', requireAuthMw, async (req, res) => {
+app.get('/api/logs', authOrDemo, async (req, res) => {
   try {
     const { date, from, to, estate } = req.query;
     if (!estate) {
       return res.status(400).json({ error: 'Укажи estate' });
     }
     let result;
-    if (date) {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-        return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
+    if (DEMO_MODE) {
+      if (date) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
+        }
+        result = await pool.query(
+          `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, created_at
+           FROM work_logs WHERE date = $1 AND estate_id = $2 AND demo_session_id = $3
+           ORDER BY created_at DESC`,
+          [date, estate, req.demo_session_id]
+        );
+      } else if (from && to) {
+        result = await pool.query(
+          `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, created_at
+           FROM work_logs WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND demo_session_id = $4
+           ORDER BY date DESC, created_at DESC`,
+          [from, to, estate, req.demo_session_id]
+        );
+      } else {
+        return res.status(400).json({ error: 'Укажи date или from+to' });
       }
-      result = await pool.query(
-        `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, created_at
-         FROM work_logs WHERE date = $1 AND estate_id = $2 AND brigadier_id = $3
-         ORDER BY created_at DESC`,
-        [date, estate, req.brigadier.id]
-      );
-    } else if (from && to) {
-      result = await pool.query(
-        `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, created_at
-         FROM work_logs WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND brigadier_id = $4
-         ORDER BY date DESC, created_at DESC`,
-        [from, to, estate, req.brigadier.id]
-      );
     } else {
-      return res.status(400).json({ error: 'Укажи date или from+to' });
+      if (date) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
+        }
+        result = await pool.query(
+          `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, created_at
+           FROM work_logs WHERE date = $1 AND estate_id = $2 AND brigadier_id = $3
+           ORDER BY created_at DESC`,
+          [date, estate, req.brigadier.id]
+        );
+      } else if (from && to) {
+        result = await pool.query(
+          `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, created_at
+           FROM work_logs WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND brigadier_id = $4
+           ORDER BY date DESC, created_at DESC`,
+          [from, to, estate, req.brigadier.id]
+        );
+      } else {
+        return res.status(400).json({ error: 'Укажи date или from+to' });
+      }
     }
     res.json({ logs: result.rows });
   } catch (error) {
@@ -745,16 +1123,24 @@ app.get('/api/logs', requireAuthMw, async (req, res) => {
 });
 
 // Удаление записи
-app.delete('/api/logs/:id', requireAuthMw, async (req, res) => {
+app.delete('/api/logs/:id', authOrDemo, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ error: 'Некорректный id' });
     }
-    const result = await pool.query(
-      'DELETE FROM work_logs WHERE id = $1 AND brigadier_id = $2 RETURNING *',
-      [id, req.brigadier.id]
-    );
+    let result;
+    if (DEMO_MODE) {
+      result = await pool.query(
+        'DELETE FROM work_logs WHERE id = $1 AND demo_session_id = $2 RETURNING *',
+        [id, req.demo_session_id]
+      );
+    } else {
+      result = await pool.query(
+        'DELETE FROM work_logs WHERE id = $1 AND brigadier_id = $2 RETURNING *',
+        [id, req.brigadier.id]
+      );
+    }
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Запись не найдена' });
     }
@@ -766,7 +1152,7 @@ app.delete('/api/logs/:id', requireAuthMw, async (req, res) => {
 });
 
 // Отчёт за период: группировка по сотруднику → квартал/клетка (в рамках одного хозяйства)
-app.get('/api/report', requireAuthMw, async (req, res) => {
+app.get('/api/report', authOrDemo, async (req, res) => {
   try {
     const { from, to, estate } = req.query;
     if (!from || !to) {
@@ -782,13 +1168,24 @@ app.get('/api/report', requireAuthMw, async (req, res) => {
       return res.status(400).json({ error: 'Дата "От" позже даты "До"' });
     }
 
-    const result = await pool.query(
-      `SELECT date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours
-       FROM work_logs
-       WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND brigadier_id = $4
-       ORDER BY employee, work_type, date`,
-      [from, to, estate, req.brigadier.id]
-    );
+    let result;
+    if (DEMO_MODE) {
+      result = await pool.query(
+        `SELECT date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours
+         FROM work_logs
+         WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND demo_session_id = $4
+         ORDER BY employee, work_type, date`,
+        [from, to, estate, req.demo_session_id]
+      );
+    } else {
+      result = await pool.query(
+        `SELECT date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours
+         FROM work_logs
+         WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND brigadier_id = $4
+         ORDER BY employee, work_type, date`,
+        [from, to, estate, req.brigadier.id]
+      );
+    }
 
     if (result.rows.length === 0) {
       return res.json({

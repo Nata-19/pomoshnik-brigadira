@@ -22,9 +22,32 @@ class BrigadeAssistant {
   }
 
   async init() {
+    await this.loadConfig();
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(e => console.log('SW error:', e));
     }
+
+    if (this.config.demoMode) {
+      // Демо: убедимся что сессия создана
+      await fetch('/api/demo/session', { method: 'POST' });
+      // Проверим есть ли культура
+      const r = await fetch('/api/estates');
+      const estates = await r.json();
+      if (estates.length === 0) {
+        this.renderCultureModal();
+        return;
+      }
+      this.estate = estates[0].id;
+      this.estates = estates;
+      await this.loadQuarters();
+      await this.loadEmployees();
+      await this.loadWorkTypes();
+      await this.loadAttendance(this.inputDate);
+      await this.loadTodayEntries(this.inputDate);
+      this.render();
+      return;
+    }
+
     // Нужна ли первичная настройка (нет ни одного администратора)?
     try {
       const sr = await fetch('/api/setup-needed');
@@ -67,6 +90,15 @@ class BrigadeAssistant {
       throw new Error('Требуется вход');
     }
     return r;
+  }
+
+  async loadConfig() {
+    try {
+      const r = await fetch('/api/config');
+      this.config = await r.json();
+    } catch (e) {
+      this.config = { demoMode: false, brandName: 'Помощьник Бригадира', brandLogo: '🍇' };
+    }
   }
 
   async loadEstates() {
@@ -215,7 +247,7 @@ class BrigadeAssistant {
     const isReg = this.authMode === 'register';
     root.innerHTML = `
       <div class="container auth-box">
-        <h1>🍇 Помощьник Бригадира</h1>
+        <h1>${this.config.brandLogo} ${this.config.brandName}</h1>
         <div class="tabs">
           <button class="tab-button ${isReg ? '' : 'active'}" onclick="app.renderAuth('login')">Войти</button>
           <button class="tab-button ${isReg ? 'active' : ''}" onclick="app.renderAuth('register')">Зарегистрироваться</button>
@@ -280,15 +312,90 @@ class BrigadeAssistant {
     }
   }
 
+  renderCultureModal() {
+    const root = document.getElementById('root');
+    root.innerHTML = `
+      <div class="container auth-box">
+        ${window.DemoUI.renderDemoBanner(this.config)}
+        <h1>${this.config.brandLogo} ${this.config.brandName}</h1>
+        <p class="auth-hint">Введи свою культуру — что у тебя растёт?</p>
+        <div class="form-group">
+          <label>Например: виноград, яблоня, черешня, клубника</label>
+          <input type="text" id="culture-input" autofocus>
+        </div>
+        <button id="culture-submit" onclick="app.submitCulture()">Продолжить</button>
+        <div id="culture-msg" class="auth-msg"></div>
+      </div>
+    `;
+  }
+
+  async submitCulture() {
+    const culture = document.getElementById('culture-input').value.trim();
+    const msg = document.getElementById('culture-msg');
+    const btn = document.getElementById('culture-submit');
+    if (!culture) { msg.textContent = '❌ Укажи культуру'; return; }
+    msg.textContent = '⏳ Готовим твою песочницу…';
+    if (btn) btn.disabled = true;
+    try {
+      const r = await fetch('/api/demo/culture', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ culture }),
+      });
+      const data = await r.json();
+      if (data.needUnit) {
+        this.renderUnitChoice(culture);
+        return;
+      }
+      if (!r.ok) {
+        msg.textContent = '❌ ' + (data.error || 'Ошибка');
+        if (btn) btn.disabled = false;
+        return;
+      }
+      location.reload();
+    } catch (e) {
+      msg.textContent = '❌ ' + e.message;
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  renderUnitChoice(culture) {
+    const root = document.getElementById('root');
+    root.innerHTML = `
+      <div class="container auth-box">
+        ${window.DemoUI.renderDemoBanner(this.config)}
+        <h1>${this.config.brandLogo} ${this.config.brandName}</h1>
+        <p class="auth-hint">У культуры «${culture}» — что считаем?</p>
+        <button onclick="app.submitCultureWithUnit('${culture}', 'bush')">🌱 Кусты</button>
+        <button onclick="app.submitCultureWithUnit('${culture}', 'tree')">🌳 Деревья</button>
+        <button onclick="app.submitCultureWithUnit('${culture}', 'other')">🌾 Другое (растения)</button>
+        <div id="unit-msg" class="auth-msg"></div>
+      </div>
+    `;
+  }
+
+  async submitCultureWithUnit(culture, unit) {
+    const msg = document.getElementById('unit-msg');
+    if (msg) msg.textContent = '⏳ Готовим твою песочницу…';
+    await fetch('/api/demo/culture', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ culture, unit }),
+    });
+    location.reload();
+  }
+
   render() {
     const root = document.getElementById('root');
     root.innerHTML = `
       <div class="container">
         <div class="app-header">
-          <h1>🍇 Помощьник Бригадира</h1>
+          ${window.DemoUI.renderDemoBanner(this.config)}
+          <h1>${this.config.brandLogo} ${this.config.brandName}</h1>
           <div class="app-user">
-            <span>${this.escapeHtml(this.me ? this.me.login : '')}</span>
-            <button class="logout-btn" onclick="app.logout()">Выйти</button>
+            ${!this.config.demoMode ? `<span>${this.escapeHtml(this.me ? this.me.login : '')}</span>` : ''}
+            ${this.config.demoMode ? window.DemoUI.renderDemoResetButton() : ''}
+            ${!this.config.demoMode ? `<button class="logout-btn" onclick="app.logout()">Выйти</button>` : ''}
             <select id="estate-sel" class="estate-chip" required onchange="app.onEstateChange()">
               <option value="">📍 Выбор хозяйства</option>
               ${this.estates.map(e => `<option value="${e.id}" ${e.id === this.estate ? 'selected' : ''}>${this.escapeHtml(e.name)}</option>`).join('')}
@@ -810,6 +917,16 @@ class BrigadeAssistant {
   async logout() {
     try { await fetch('/api/logout', { method: 'POST' }); } catch (e) {}
     location.reload();
+  }
+
+  async resetDemo() {
+    if (!confirm('Точно? Все твои записи удалятся, начнётся новая чистая сессия.')) return;
+    try {
+      await fetch('/api/demo/reset', { method: 'POST' });
+      location.reload();
+    } catch (e) {
+      alert('Не удалось сбросить: ' + e.message);
+    }
   }
 
   async loadBrigadiers() {
