@@ -695,9 +695,28 @@ button:active {
 .report-header {
   font-weight: 700;
   color: #2c3e50;
-  font-size: 1rem;
-  padding: 6px 8px 10px 8px;
+  font-size: 0.95rem;
+  padding: 4px 8px 6px 8px;
   border-bottom: 1px solid #ddd;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
+}
+
+/* Компактный вид только в Отчёте за период — журнал и плашка «Всего за день» остаются прежними. */
+#report-result .log-group {
+  margin: 3px 0;
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+#report-result .log-group-head {
+  margin-bottom: 1px;
+  font-size: 0.9rem;
+  line-height: 1.2;
+}
+#report-result .log-worker-row {
+  padding: 0;
+  line-height: 1.25;
+}
+#report-result .log-worker-name {
+  font-size: 0.88rem;
 }
 .demo-reset-btn:hover { background: #4a8fc2; }
