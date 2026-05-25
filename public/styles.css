@@ -611,4 +611,45 @@ button:active {
   font-size: 13px;
   cursor: pointer;
 }
+
+/* === Журнал: групповой формат (Этап 4) === */
+.log-group {
+  margin: 8px 0;
+  padding: 8px 10px;
+  background: #fafafa;
+  border: 1px solid #eee;
+  border-radius: 8px;
+}
+.log-group-head {
+  font-weight: 600;
+  color: #2c3e50;
+  margin-bottom: 4px;
+  font-size: 0.95rem;
+}
+.log-worker-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 0;
+  border-top: 1px dashed #e6e6e6;
+}
+.log-worker-row:first-of-type { border-top: none; }
+.log-worker-name {
+  flex: 1;
+  font-size: 0.92rem;
+  color: #333;
+}
+.delete-btn-mini {
+  padding: 2px 8px;
+  font-size: 0.85rem;
+  background: #fff;
+  border: 1px solid #ddd;
+  color: #c0392b;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.delete-btn-mini:hover {
+  background: #fff5f5;
+  border-color: #c0392b;
+}
 .demo-reset-btn:hover { background: #4a8fc2; }
