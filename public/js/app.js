@@ -636,10 +636,33 @@ class BrigadeAssistant {
     return 'кустов';
   }
 
-  // HTML карточек записей за выбранную дату — новый формат: группами вид работ + клетка, работники столбиком.
+  // HTML карточек записей за выбранную дату.
   renderEntriesHtml() {
-    const groups = this.groupLogsForDisplay(this.entries || []);
-    return this.renderLogGroupsHtml(groups, 'deleteEntry');
+    if (!this.entries || this.entries.length === 0) {
+      return '<p class="chips-empty">Записей пока нет.</p>';
+    }
+    return this.entries.map(log => {
+      let measure;
+      if (log.measure_mode === 'hours') {
+        measure = `${log.hours} часов`;
+      } else {
+        const rowCount = String(log.rows || '').split(',').filter(x => x.trim()).length;
+        measure = `ряды ${this.escapeHtml(log.rows)} · ${rowCount} рядов`;
+        if (log.measure_mode === 'rows_bushes') measure += ` · ${log.bushes} кустов`;
+      }
+      const place = log.measure_mode === 'hours' && !log.quarter
+        ? '' : ` · Кв.${this.escapeHtml(log.quarter)} кл.${this.escapeHtml(log.cell)}`;
+      return `
+        <div class="entry-card">
+          <div class="log-info">
+            <div class="log-employee">${this.escapeHtml(log.employee)}</div>
+            <div class="log-meta">${this.escapeHtml(log.work_type || '')}${place}</div>
+            <div class="log-meta">${measure}</div>
+          </div>
+          <button class="delete-btn" onclick="app.deleteEntry(${log.id})">Удалить</button>
+        </div>
+      `;
+    }).join('');
   }
 
   // Загружает клетки выбранного квартала в селект #i2-cell.
