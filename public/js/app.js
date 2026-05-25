@@ -591,6 +591,51 @@ class BrigadeAssistant {
     return arr;
   }
 
+  // Рисует список групп записей в новом формате.
+  // deleteFnName — строка с именем метода удаления ('deleteEntry' на input-tab, 'deleteLog' на journal-tab).
+  // Возвращает готовый HTML строкой.
+  renderLogGroupsHtml(groups, deleteFnName) {
+    if (!groups || groups.length === 0) {
+      return '<p class="chips-empty">Записей пока нет.</p>';
+    }
+    return groups.map(g => {
+      const place = (g.quarter || g.cell)
+        ? `Кв.${this.escapeHtml(g.quarter)}${g.cell ? ', клет.' + this.escapeHtml(g.cell) : ''}`
+        : '';
+      const head = `<div class="log-group-head">${this.escapeHtml(g.work_type || '—')}${place ? ' · ' + place : ''}</div>`;
+      const rows = g.workers.map(w => {
+        let measure;
+        if (w.measure_mode === 'hours') {
+          measure = `${w.hours} часов`;
+        } else if (w.measure_mode === 'hectares') {
+          measure = `${w.hectares != null ? w.hectares : 0} гектаров`;
+        } else if (w.measure_mode === 'kilometers') {
+          measure = `${w.kilometers != null ? w.kilometers : 0} км`;
+        } else {
+          const rowCount = String(w.rows || '').split(',').filter(x => x.trim()).length;
+          measure = `${rowCount} рядов`;
+          if (w.measure_mode === 'rows_bushes') {
+            const label = this.getUnitLabel(w);
+            measure += `, ${w.bushes} ${label}`;
+          }
+        }
+        return `
+          <div class="log-worker-row">
+            <span class="log-worker-name">${this.escapeHtml(w.employee)} — ${measure}</span>
+            <button class="delete-btn-mini" onclick="app.${deleteFnName}(${w.id})">✕</button>
+          </div>
+        `;
+      }).join('');
+      return `<div class="log-group">${head}${rows}</div>`;
+    }).join('');
+  }
+
+  // Подпись единицы для конкретной записи. Этап А — пока всегда «кустов».
+  // В Part B будет читать unit из quarter и возвращать «кустов»/«деревьев»/«растений».
+  getUnitLabel(log) {
+    return 'кустов';
+  }
+
   // HTML карточек записей за выбранную дату.
   renderEntriesHtml() {
     if (!this.entries || this.entries.length === 0) {
