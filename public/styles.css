@@ -692,16 +692,4 @@ button:active {
   flex: 0 0 auto;
   font-variant-numeric: tabular-nums;
 }
-.total-final {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 8px 0 8px;
-  margin-top: 6px;
-  border-top: 2px solid #b0c4b0;
-  font-weight: 700;
-  font-size: 0.98rem;
-  color: #2c3e50;
-}
 .demo-reset-btn:hover { background: #4a8fc2; }
