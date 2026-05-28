@@ -617,12 +617,11 @@ class BrigadeAssistant {
         } else if (w.measure_mode === 'kilometers') {
           measure = `${w.kilometers != null ? w.kilometers : 0} км`;
         } else {
-          const rowCount = String(w.rows || '').split(',').filter(x => x.trim()).length;
-          measure = `${rowCount} рядов`;
-          if (w.measure_mode === 'rows_bushes') {
-            const label = this.getUnitLabel(w);
-            measure += `, ${w.bushes} ${label}`;
-          }
+          measure = String(w.rows || '')
+            .split(',')
+            .map(s => s.trim())
+            .filter(Boolean)
+            .join(', ') || '—';
         }
         const deleteBtn = deleteFnName
           ? `<button class="delete-btn-mini" onclick="app.${deleteFnName}(${w.id})">✕</button>`
