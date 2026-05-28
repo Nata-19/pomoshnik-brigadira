@@ -660,6 +660,32 @@ button:active {
   border-color: #c0392b;
 }
 
+/* Многострочный вариант строки работника (Журнал) — имя/кнопка сверху, номера рядов снизу с переносом. */
+.log-worker-row.multiline {
+  display: block;
+  padding: 4px 0;
+}
+.log-worker-row.multiline .log-worker-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.log-worker-row.multiline .log-worker-name {
+  flex: 0 0 auto;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  font-weight: 500;
+}
+.log-worker-row.multiline .log-worker-measure {
+  margin-top: 2px;
+  padding-left: 4px;
+  font-size: 0.9rem;
+  color: #555;
+  word-break: break-word;
+  line-height: 1.35;
+}
+
 /* === Плашка «Всего за день» === */
 .daily-totals { background: #fafffa; }
 .total-wt-block { margin-bottom: 8px; }

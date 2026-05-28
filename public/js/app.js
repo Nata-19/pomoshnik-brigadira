@@ -598,8 +598,9 @@ class BrigadeAssistant {
 
   // Рисует список групп записей в новом формате.
   // deleteFnName — строка с именем метода удаления ('deleteEntry' / 'deleteLog'), или null/'' если кнопку удаления не нужна (отчёт за период).
+  // multilineRows — если true, строка работника разбивается: имя+кнопка сверху, измерение (номера рядов) отдельной строкой ниже с переносом по словам. Используется в Журнале, чтобы длинный список рядов не обрезался.
   // Возвращает готовый HTML строкой.
-  renderLogGroupsHtml(groups, deleteFnName) {
+  renderLogGroupsHtml(groups, deleteFnName, multilineRows = false) {
     if (!groups || groups.length === 0) {
       return '<p class="chips-empty">Записей пока нет.</p>';
     }
@@ -626,6 +627,17 @@ class BrigadeAssistant {
         const deleteBtn = deleteFnName
           ? `<button class="delete-btn-mini" onclick="app.${deleteFnName}(${w.id})">✕</button>`
           : '';
+        if (multilineRows) {
+          return `
+            <div class="log-worker-row multiline">
+              <div class="log-worker-head">
+                <span class="log-worker-name">${this.escapeHtml(w.employee)}</span>
+                ${deleteBtn}
+              </div>
+              <div class="log-worker-measure">${measure}</div>
+            </div>
+          `;
+        }
         return `
           <div class="log-worker-row">
             <span class="log-worker-name">${this.escapeHtml(w.employee)} — ${measure}</span>
@@ -949,7 +961,7 @@ class BrigadeAssistant {
         return;
       }
       const groups = this.groupLogsForDisplay(data.logs);
-      list.innerHTML = this.renderLogGroupsHtml(groups, 'deleteLog');
+      list.innerHTML = this.renderLogGroupsHtml(groups, 'deleteLog', true);
     } catch (e) {
       list.innerHTML = '<p style="color:#c0392b;padding:10px;">❌ ' + e.message + '</p>';
     }
