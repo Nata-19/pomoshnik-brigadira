@@ -617,12 +617,11 @@ class BrigadeAssistant {
         } else if (w.measure_mode === 'kilometers') {
           measure = `${w.kilometers != null ? w.kilometers : 0} км`;
         } else {
-          const rowCount = String(w.rows || '').split(',').filter(x => x.trim()).length;
-          measure = `${rowCount} рядов`;
-          if (w.measure_mode === 'rows_bushes') {
-            const label = this.getUnitLabel(w);
-            measure += `, ${w.bushes} ${label}`;
-          }
+          measure = String(w.rows || '')
+            .split(',')
+            .map(s => s.trim())
+            .filter(Boolean)
+            .join(', ') || '—';
         }
         const deleteBtn = deleteFnName
           ? `<button class="delete-btn-mini" onclick="app.${deleteFnName}(${w.id})">✕</button>`
@@ -691,7 +690,7 @@ class BrigadeAssistant {
         measure = `${log.hours} часов`;
       } else {
         const rowCount = String(log.rows || '').split(',').filter(x => x.trim()).length;
-        measure = `ряды ${this.escapeHtml(log.rows)} · ${rowCount} рядов`;
+        measure = `${rowCount} рядов`;
         if (log.measure_mode === 'rows_bushes') measure += ` · ${log.bushes} кустов`;
       }
       const place = log.measure_mode === 'hours' && !log.quarter
