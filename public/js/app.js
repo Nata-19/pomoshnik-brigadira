@@ -691,7 +691,7 @@ class BrigadeAssistant {
         measure = `${log.hours} часов`;
       } else {
         const rowCount = String(log.rows || '').split(',').filter(x => x.trim()).length;
-        measure = `ряды ${this.escapeHtml(log.rows)} · ${rowCount} рядов`;
+        measure = `${rowCount} рядов`;
         if (log.measure_mode === 'rows_bushes') measure += ` · ${log.bushes} кустов`;
       }
       const place = log.measure_mode === 'hours' && !log.quarter
