@@ -753,4 +753,24 @@ button:active {
 #report-result .log-worker-name {
   font-size: 0.9rem;
 }
+
+/* Отчёт за период — группировка по работнику */
+.report-emp-block {
+  margin-bottom: 8px;
+}
+.report-emp-block:last-of-type { margin-bottom: 0; }
+.report-emp-head {
+  font-weight: 700;
+  color: #2c3e50;
+  font-size: 0.95rem;
+  margin-bottom: 2px;
+  line-height: 1.25;
+}
+.report-emp-act {
+  padding: 1px 0 1px 10px;
+  font-size: 0.9rem;
+  color: #444;
+  line-height: 1.35;
+  word-break: break-word;
+}
 .demo-reset-btn:hover { background: #4a8fc2; }

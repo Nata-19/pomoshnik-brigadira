@@ -655,6 +655,89 @@ class BrigadeAssistant {
     return 'кустов';
   }
 
+  // Группировка логов по работнику для Отчёта за период.
+  // Возвращает Map: имя работника → массив активностей.
+  // Каждая активность = уникальная пара (вид работ, квартал, клетка, режим) с суммированными цифрами.
+  groupLogsByEmployee(logs) {
+    const byEmp = new Map();
+    if (!logs || logs.length === 0) return byEmp;
+    for (const log of logs) {
+      const emp = log.employee || '—';
+      if (!byEmp.has(emp)) byEmp.set(emp, new Map());
+      const acts = byEmp.get(emp);
+      const key = [log.work_type || '', log.quarter || '', log.cell || '', log.measure_mode || ''].join('||');
+      if (!acts.has(key)) {
+        acts.set(key, {
+          work_type: log.work_type || '',
+          quarter: log.quarter || '',
+          cell: log.cell || '',
+          measure_mode: log.measure_mode || '',
+          rowCount: 0,
+          bushes: 0,
+          hours: 0,
+          hectares: 0,
+          kilometers: 0,
+        });
+      }
+      const a = acts.get(key);
+      a.rowCount += String(log.rows || '').split(',').filter(x => x.trim()).length;
+      a.bushes += Number(log.bushes) || 0;
+      a.hours += Number(log.hours) || 0;
+      a.hectares += Number(log.hectares) || 0;
+      a.kilometers += Number(log.kilometers) || 0;
+    }
+    const sorted = new Map();
+    const names = Array.from(byEmp.keys()).sort((a, b) => a.localeCompare(b, 'ru'));
+    for (const emp of names) {
+      const acts = Array.from(byEmp.get(emp).values());
+      acts.sort((a, b) => {
+        const byWt = (a.work_type || '').localeCompare(b.work_type || '', 'ru');
+        if (byWt !== 0) return byWt;
+        const aq = Number(a.quarter) || 0;
+        const bq = Number(b.quarter) || 0;
+        if (aq !== bq) return aq - bq;
+        const ac = Number(a.cell) || 0;
+        const bc = Number(b.cell) || 0;
+        return ac - bc;
+      });
+      sorted.set(emp, acts);
+    }
+    return sorted;
+  }
+
+  // Рисует Отчёт за период в формате «работник → его активности» (по запросу Натали).
+  // Каждая активность: вид работ · квартал/клетка — сумма (рядов/кустов, часов, га, км).
+  renderEmployeeReportHtml(byEmp) {
+    if (!byEmp || byEmp.size === 0) {
+      return '<p class="chips-empty">За этот период записей нет.</p>';
+    }
+    const blocks = [];
+    for (const [emp, acts] of byEmp) {
+      const empHead = `<div class="report-emp-head">${this.escapeHtml(emp)}</div>`;
+      const lines = acts.map(a => {
+        const place = (a.quarter || a.cell)
+          ? `Кв.${this.escapeHtml(a.quarter)}${a.cell ? ', клет.' + this.escapeHtml(a.cell) : ''}`
+          : '';
+        let measure;
+        if (a.measure_mode === 'hours') {
+          measure = `${a.hours} часов`;
+        } else if (a.measure_mode === 'hectares') {
+          measure = `${a.hectares} гектаров`;
+        } else if (a.measure_mode === 'kilometers') {
+          measure = `${a.kilometers} км`;
+        } else if (a.measure_mode === 'rows_bushes') {
+          measure = `${a.rowCount} рядов, ${a.bushes} кустов`;
+        } else {
+          measure = `${a.rowCount} рядов`;
+        }
+        const wtPlace = `${this.escapeHtml(a.work_type || '—')}${place ? ' · ' + place : ''}`;
+        return `<div class="report-emp-act">${wtPlace} — ${measure}</div>`;
+      }).join('');
+      blocks.push(`<div class="report-emp-block">${empHead}${lines}</div>`);
+    }
+    return blocks.join('');
+  }
+
   // Плашка «Всего за день» на Вводе данных.
   // Группировка: вид работ → квартал/клетка. Суммы рядов и кустов по записям rows_bushes/rows_only.
   // Часовые/гектарные/километровые записи в эту плашку не входят.
@@ -1021,9 +1104,9 @@ class BrigadeAssistant {
         resultDiv.innerHTML = '<p style="color:#888;padding:10px;">За этот период записей нет.</p>';
         return;
       }
-      const groups = this.groupLogsForDisplay(data.logs);
+      const byEmp = this.groupLogsByEmployee(data.logs);
       const header = `<div class="report-header">Отчёт с ${this.escapeHtml(from)} по ${this.escapeHtml(to)}</div>`;
-      resultDiv.innerHTML = header + this.renderLogGroupsHtml(groups, null);
+      resultDiv.innerHTML = header + this.renderEmployeeReportHtml(byEmp);
     } catch (e) {
       resultDiv.innerHTML = '<p style="color:#c0392b;padding:10px;">❌ ' + e.message + '</p>';
     }
