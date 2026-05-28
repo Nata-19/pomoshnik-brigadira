@@ -611,4 +611,120 @@ button:active {
   font-size: 13px;
   cursor: pointer;
 }
+
+/* === Журнал: групповой формат (Этап 4) === */
+.log-group {
+  margin: 8px 0;
+  padding: 8px 10px;
+  background: #fafafa;
+  border: 1px solid #eee;
+  border-radius: 8px;
+}
+.log-group-head {
+  font-weight: 600;
+  color: #2c3e50;
+  margin-bottom: 4px;
+  font-size: 0.95rem;
+}
+.log-worker-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 0;
+  border-top: 1px dashed #e6e6e6;
+}
+.log-worker-row:first-of-type { border-top: none; }
+.log-worker-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.92rem;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.delete-btn-mini {
+  flex: 0 0 auto;
+  width: auto;
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 0.85rem;
+  background: #fff;
+  border: 1px solid #ddd;
+  color: #c0392b;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.delete-btn-mini:hover {
+  background: #fff5f5;
+  border-color: #c0392b;
+}
+
+/* === Плашка «Всего за день» === */
+.daily-totals { background: #fafffa; }
+.total-wt-block { margin-bottom: 8px; }
+.total-wt-block:last-of-type { margin-bottom: 4px; }
+.total-wt-head {
+  font-weight: 600;
+  color: #2c3e50;
+  margin-bottom: 3px;
+  font-size: 0.95rem;
+}
+.total-cell-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 3px 8px;
+  font-size: 0.92rem;
+  color: #444;
+  border-top: 1px dashed #e6e6e6;
+}
+.total-cell-row:first-of-type { border-top: none; }
+.total-cell-row > span:first-child {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.total-cell-row > span:last-child {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+.report-header {
+  font-weight: 700;
+  color: #2c3e50;
+  font-size: 0.95rem;
+  padding: 4px 8px 6px 8px;
+  border-bottom: 1px solid #ddd;
+  margin-bottom: 4px;
+}
+
+/* Компактный вид только в Отчёте за период — журнал и плашка «Всего за день» остаются прежними. */
+/* Контейнер .result задаёт pre-wrap + monospace для старого текстового отчёта — гасим, иначе HTML рендерится с дикими отступами. */
+#report-result {
+  padding: 10px;
+  white-space: normal;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+}
+#report-result .log-group {
+  margin: 4px 0;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+#report-result .log-group-head {
+  margin-bottom: 2px;
+  font-size: 0.92rem;
+  line-height: 1.25;
+}
+#report-result .log-worker-row {
+  padding: 1px 0;
+  line-height: 1.3;
+}
+#report-result .log-worker-name {
+  font-size: 0.9rem;
+}
 .demo-reset-btn:hover { background: #4a8fc2; }

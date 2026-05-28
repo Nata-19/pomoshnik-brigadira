@@ -530,6 +530,11 @@ class BrigadeAssistant {
         <div class="block-label">Записи за ${this.escapeHtml(this.inputDate)}</div>
         <div id="i2-entries">${this.renderEntriesHtml()}</div>
       </div>
+
+      <div class="ctx-block daily-totals">
+        <div class="block-label">Всего за день</div>
+        <div id="i2-totals">${this.renderDailyTotalsHtml()}</div>
+      </div>
     `;
     this.refreshI2Cells();
   }
@@ -558,6 +563,121 @@ class BrigadeAssistant {
         </div>
       </div>
     `;
+  }
+
+  // Группирует плоский массив log-записей в структуру для отображения:
+  // [ { work_type, quarter, cell, workers: [{ employee, measure_mode, rows, bushes, hours, hectares, kilometers, id }] }, ... ]
+  // Сортировка: вид работ алфавитно, внутри — квартал, клетка.
+  // Пустые quarter/cell (часовые/механизированные без клетки) попадают в свою группу.
+  groupLogsForDisplay(logs) {
+    if (!logs || logs.length === 0) return [];
+    const groups = new Map();
+    for (const log of logs) {
+      const wt = log.work_type || '';
+      const q = log.quarter || '';
+      const c = log.cell || '';
+      const key = `${wt}||${q}||${c}`;
+      if (!groups.has(key)) {
+        groups.set(key, { work_type: wt, quarter: q, cell: c, workers: [] });
+      }
+      groups.get(key).workers.push(log);
+    }
+    const arr = Array.from(groups.values());
+    arr.sort((a, b) => {
+      const byWt = (a.work_type || '').localeCompare(b.work_type || '', 'ru');
+      if (byWt !== 0) return byWt;
+      const aq = Number(a.quarter) || 0;
+      const bq = Number(b.quarter) || 0;
+      if (aq !== bq) return aq - bq;
+      const ac = Number(a.cell) || 0;
+      const bc = Number(b.cell) || 0;
+      return ac - bc;
+    });
+    return arr;
+  }
+
+  // Рисует список групп записей в новом формате.
+  // deleteFnName — строка с именем метода удаления ('deleteEntry' / 'deleteLog'), или null/'' если кнопку удаления не нужна (отчёт за период).
+  // Возвращает готовый HTML строкой.
+  renderLogGroupsHtml(groups, deleteFnName) {
+    if (!groups || groups.length === 0) {
+      return '<p class="chips-empty">Записей пока нет.</p>';
+    }
+    return groups.map(g => {
+      const place = (g.quarter || g.cell)
+        ? `Кв.${this.escapeHtml(g.quarter)}${g.cell ? ', клет.' + this.escapeHtml(g.cell) : ''}`
+        : '';
+      const head = `<div class="log-group-head">${this.escapeHtml(g.work_type || '—')}${place ? ' · ' + place : ''}</div>`;
+      const rows = g.workers.map(w => {
+        let measure;
+        if (w.measure_mode === 'hours') {
+          measure = `${w.hours} часов`;
+        } else if (w.measure_mode === 'hectares') {
+          measure = `${w.hectares != null ? w.hectares : 0} гектаров`;
+        } else if (w.measure_mode === 'kilometers') {
+          measure = `${w.kilometers != null ? w.kilometers : 0} км`;
+        } else {
+          const rowCount = String(w.rows || '').split(',').filter(x => x.trim()).length;
+          measure = `${rowCount} рядов`;
+          if (w.measure_mode === 'rows_bushes') {
+            const label = this.getUnitLabel(w);
+            measure += `, ${w.bushes} ${label}`;
+          }
+        }
+        const deleteBtn = deleteFnName
+          ? `<button class="delete-btn-mini" onclick="app.${deleteFnName}(${w.id})">✕</button>`
+          : '';
+        return `
+          <div class="log-worker-row">
+            <span class="log-worker-name">${this.escapeHtml(w.employee)} — ${measure}</span>
+            ${deleteBtn}
+          </div>
+        `;
+      }).join('');
+      return `<div class="log-group">${head}${rows}</div>`;
+    }).join('');
+  }
+
+  // Подпись единицы для конкретной записи. Этап А — пока всегда «кустов».
+  // В Part B будет читать unit из quarter и возвращать «кустов»/«деревьев»/«растений».
+  getUnitLabel(log) {
+    return 'кустов';
+  }
+
+  // Плашка «Всего за день» на Вводе данных.
+  // Группировка: вид работ → квартал/клетка. Суммы рядов и кустов по записям rows_bushes/rows_only.
+  // Часовые/гектарные/километровые записи в эту плашку не входят.
+  // Общий итог по всем видам работ НЕ показываем — это семантически некорректно (нельзя складывать ряды разных работ).
+  renderDailyTotalsHtml() {
+    if (!this.entries || this.entries.length === 0) {
+      return '<p class="chips-empty">Пока пусто.</p>';
+    }
+    const byWt = new Map();
+    for (const log of this.entries) {
+      if (log.measure_mode !== 'rows_bushes' && log.measure_mode !== 'rows_only') continue;
+      const rowCount = String(log.rows || '').split(',').filter(x => x.trim()).length;
+      const bushes = Number(log.bushes) || 0;
+      const wt = log.work_type || '—';
+      if (!byWt.has(wt)) byWt.set(wt, new Map());
+      const byCell = byWt.get(wt);
+      const cellKey = `Кв.${log.quarter || '?'}, клет.${log.cell || '?'}`;
+      if (!byCell.has(cellKey)) byCell.set(cellKey, { rows: 0, bushes: 0 });
+      const agg = byCell.get(cellKey);
+      agg.rows += rowCount;
+      agg.bushes += bushes;
+    }
+    if (byWt.size === 0) {
+      return '<p class="chips-empty">Ручных записей пока нет.</p>';
+    }
+    const wtBlocks = [];
+    for (const [wt, byCell] of byWt) {
+      const cellLines = [];
+      for (const [cellKey, agg] of byCell) {
+        cellLines.push(`<div class="total-cell-row"><span>${this.escapeHtml(cellKey)}</span><span>${agg.rows} рядов, ${agg.bushes} кустов</span></div>`);
+      }
+      wtBlocks.push(`<div class="total-wt-block"><div class="total-wt-head">${this.escapeHtml(wt)}</div>${cellLines.join('')}</div>`);
+    }
+    return wtBlocks.join('');
   }
 
   // HTML карточек записей за выбранную дату.
@@ -829,32 +949,8 @@ class BrigadeAssistant {
         list.innerHTML = '<p style="color:#888;padding:10px;">За эту дату записей нет.</p>';
         return;
       }
-      // Сортируем по кварталу/клетке/сотруднику для удобства
-      const sorted = data.logs.slice().sort((a, b) =>
-        (+a.quarter - +b.quarter) || (+a.cell - +b.cell) || a.employee.localeCompare(b.employee, 'ru')
-      );
-      list.innerHTML = sorted.map(log => {
-        let measure;
-        if (log.measure_mode === 'hours') {
-          measure = `${log.hours} часов`;
-        } else {
-          const rowCount = String(log.rows || '').split(',').filter(x => x.trim()).length;
-          measure = `ряды ${this.escapeHtml(log.rows)} · ${rowCount} рядов`;
-          if (log.measure_mode === 'rows_bushes') measure += ` · ${log.bushes} кустов`;
-        }
-        const place = (log.measure_mode === 'hours' && !log.quarter)
-          ? '' : `Кв.${this.escapeHtml(log.quarter)}, кл.${this.escapeHtml(log.cell)} · `;
-        return `
-        <div class="log-entry">
-          <div class="log-info">
-            <div class="log-employee">${this.escapeHtml(log.employee)}</div>
-            <div class="log-meta">${this.escapeHtml(log.work_type || '')}</div>
-            <div class="log-meta">${place}${measure}</div>
-          </div>
-          <button class="delete-btn" onclick="app.deleteLog(${log.id})">Удалить</button>
-        </div>
-      `;
-      }).join('');
+      const groups = this.groupLogsForDisplay(data.logs);
+      list.innerHTML = this.renderLogGroupsHtml(groups, 'deleteLog');
     } catch (e) {
       list.innerHTML = '<p style="color:#c0392b;padding:10px;">❌ ' + e.message + '</p>';
     }
@@ -899,18 +995,26 @@ class BrigadeAssistant {
       return;
     }
 
-    this.showResult('⏳ Загрузка отчёта...', false, resultDiv);
+    resultDiv.style.display = 'block';
+    resultDiv.classList.remove('error', 'success');
+    resultDiv.innerHTML = '<p style="padding:10px;">⏳ Загрузка отчёта...</p>';
 
     try {
-      const response = await fetch(`/api/report?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&estate=${encodeURIComponent(this.estate)}`);
-      const data = await response.json();
-      if (response.ok) {
-        this.showResult(data.report, false, resultDiv);
-      } else {
-        this.showResult('❌ ' + (data.error || 'Не удалось получить отчёт'), true, resultDiv);
+      const r = await fetch(`/api/logs?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&estate=${encodeURIComponent(this.estate)}`);
+      const data = await r.json();
+      if (!r.ok) {
+        resultDiv.innerHTML = '<p style="color:#c0392b;padding:10px;">❌ ' + (data.error || 'Не удалось получить отчёт') + '</p>';
+        return;
       }
-    } catch (error) {
-      this.showResult('❌ ' + error.message, true, resultDiv);
+      if (!data.logs || data.logs.length === 0) {
+        resultDiv.innerHTML = '<p style="color:#888;padding:10px;">За этот период записей нет.</p>';
+        return;
+      }
+      const groups = this.groupLogsForDisplay(data.logs);
+      const header = `<div class="report-header">Отчёт с ${this.escapeHtml(from)} по ${this.escapeHtml(to)}</div>`;
+      resultDiv.innerHTML = header + this.renderLogGroupsHtml(groups, null);
+    } catch (e) {
+      resultDiv.innerHTML = '<p style="color:#c0392b;padding:10px;">❌ ' + e.message + '</p>';
     }
   }
 
