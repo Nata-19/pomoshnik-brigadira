@@ -796,8 +796,12 @@ app.get('/api/work-types', authOrDemo, async (req, res) => {
 app.post('/api/work-types', authOrDemo, async (req, res) => {
   try {
     const name = (req.body.name || '').trim();
+    const mode = (req.body.default_measure_mode || '').trim() || 'rows_bushes';
     if (!name) {
       return res.status(400).json({ error: 'Укажи название вида работ' });
+    }
+    if (!MEASURE_MODES.includes(mode)) {
+      return res.status(400).json({ error: 'Неизвестный режим подсчёта' });
     }
     if (DEMO_MODE) {
       const exists = await pool.query(
@@ -808,8 +812,8 @@ app.post('/api/work-types', authOrDemo, async (req, res) => {
         return res.status(400).json({ error: 'Такой вид работ уже есть' });
       }
       const ins = await pool.query(
-        'INSERT INTO work_types (name, demo_session_id) VALUES ($1, $2) RETURNING id, name',
-        [name, req.demo_session_id]
+        'INSERT INTO work_types (name, default_measure_mode, demo_session_id) VALUES ($1, $2, $3) RETURNING id, name, default_measure_mode, kind',
+        [name, mode, req.demo_session_id]
       );
       return res.json({ work_type: ins.rows[0] });
     }
@@ -821,8 +825,8 @@ app.post('/api/work-types', authOrDemo, async (req, res) => {
       return res.status(400).json({ error: 'Такой вид работ уже есть' });
     }
     const ins = await pool.query(
-      'INSERT INTO work_types (name) VALUES ($1) RETURNING id, name',
-      [name]
+      'INSERT INTO work_types (name, default_measure_mode) VALUES ($1, $2) RETURNING id, name, default_measure_mode, kind',
+      [name, mode]
     );
     res.json({ work_type: ins.rows[0] });
   } catch (err) {
