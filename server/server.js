@@ -437,7 +437,8 @@ app.get('/api/quarters', authOrDemo, async (req, res) => {
     }
     const quarters = Object.keys(estate.quarters).map(key => ({
       id: key,
-      name: estate.quarters[key].name
+      name: estate.quarters[key].name,
+      unit: estate.quarters[key].unit || null,
     }));
     res.json(quarters);
   } catch (err) {
@@ -817,6 +818,7 @@ app.post('/api/work-types', authOrDemo, async (req, res) => {
   try {
     const name = (req.body.name || '').trim();
     const mode = (req.body.default_measure_mode || '').trim() || 'rows_bushes';
+    const kind = (req.body.kind === 'mechanized') ? 'mechanized' : 'manual';
     if (!name) {
       return res.status(400).json({ error: 'Укажи название вида работ' });
     }
@@ -832,8 +834,8 @@ app.post('/api/work-types', authOrDemo, async (req, res) => {
         return res.status(400).json({ error: 'Такой вид работ уже есть' });
       }
       const ins = await pool.query(
-        'INSERT INTO work_types (name, default_measure_mode, demo_session_id) VALUES ($1, $2, $3) RETURNING id, name, default_measure_mode, kind',
-        [name, mode, req.demo_session_id]
+        'INSERT INTO work_types (name, default_measure_mode, kind, demo_session_id) VALUES ($1, $2, $3, $4) RETURNING id, name, default_measure_mode, kind',
+        [name, mode, kind, req.demo_session_id]
       );
       return res.json({ work_type: ins.rows[0] });
     }
@@ -845,8 +847,8 @@ app.post('/api/work-types', authOrDemo, async (req, res) => {
       return res.status(400).json({ error: 'Такой вид работ уже есть' });
     }
     const ins = await pool.query(
-      'INSERT INTO work_types (name, default_measure_mode) VALUES ($1, $2) RETURNING id, name, default_measure_mode, kind',
-      [name, mode]
+      'INSERT INTO work_types (name, default_measure_mode, kind) VALUES ($1, $2, $3) RETURNING id, name, default_measure_mode, kind',
+      [name, mode, kind]
     );
     res.json({ work_type: ins.rows[0] });
   } catch (err) {

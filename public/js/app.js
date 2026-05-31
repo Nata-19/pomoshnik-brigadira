@@ -487,13 +487,21 @@ class BrigadeAssistant {
           <select id="i2-cell" class="chip-select" required onchange="app.onI2CellChange()">
             <option value="">Клетка...</option>
           </select>
-          <select id="i2-worktype" class="chip-select" required onchange="app.onI2WorkTypeChange()">
-            <option value="">Вид работ...</option>
-            ${this.workTypes.map(w => `<option value="${this.escapeHtml(w.name)}" ${w.name === this.ctxWorkType ? 'selected' : ''}>${this.escapeHtml(w.name)}</option>`).join('')}
+          <select id="i2-worktype" class="chip-select" required onchange="app.onI2WorkTypeChange('manual')">
+            <option value="">Вид работ (ручные)...</option>
+            ${this.workTypes.filter(w => (w.kind || 'manual') !== 'mechanized').map(w => `<option value="${this.escapeHtml(w.name)}" ${w.name === this.ctxWorkType ? 'selected' : ''}>${this.escapeHtml(w.name)}</option>`).join('')}
+          </select>
+          <select id="i2-worktype-mech" class="chip-select" onchange="app.onI2WorkTypeChange('mechanized')">
+            <option value="">🚜 Механизированные...</option>
+            ${this.workTypes.filter(w => w.kind === 'mechanized').map(w => `<option value="${this.escapeHtml(w.name)}" ${w.name === this.ctxWorkType ? 'selected' : ''}>${this.escapeHtml(w.name)}</option>`).join('')}
           </select>
         </div>
         <div class="add-inline">
           <input type="text" id="i2-new-worktype" placeholder="Новый вид работ" autocomplete="off">
+          <select id="i2-new-worktype-kind" class="chip-select" style="max-width:160px">
+            <option value="manual">Ручной</option>
+            <option value="mechanized">🚜 Механизированный</option>
+          </select>
           <button class="mini-btn" onclick="app.addWorkType()">+ вид работ</button>
         </div>
         <div class="block-label">Как считать:</div>
@@ -664,21 +672,33 @@ class BrigadeAssistant {
 
   // Возвращает множественное «кустов»/«деревьев»/«растений» для подписи в журнале и плашке записей.
   // Ищем unit в кварталах текущего хозяйства; если не найден (старая запись или прод-данные без unit) — fallback «кустов».
+  // Возвращает unit (tree/bush/other) для подписей. Если в записи/контексте
+  // указан конкретный квартал — берём из него. Иначе fallback на unit первого
+  // квартала хозяйства (для демо все кварталы одного хозяйства имеют одинаковый unit).
+  currentUnit(quarterId) {
+    if (!this.quarters || this.quarters.length === 0) return null;
+    if (quarterId) {
+      const q = this.quarters.find(q =>
+        String(q.id) === String(quarterId) ||
+        (q.name && q.name.endsWith('.' + quarterId))
+      );
+      if (q) return q.unit || null;
+    }
+    return this.quarters[0].unit || null;
+  }
+
   getUnitLabel(log) {
-    if (!log) return 'кустов';
-    const q = this.quarters && this.quarters.find(q => String(q.id) === String(log.quarter) || (q.name && q.name.endsWith('.' + log.quarter)));
-    const unit = q ? q.unit : null;
+    const unit = this.currentUnit(log && log.quarter);
     if (unit === 'tree') return 'деревьев';
     if (unit === 'other') return 'растений';
     return 'кустов';
   }
 
   // Подпись на кнопке режима подсчёта. Меняется только для rows_bushes
-  // в зависимости от unit текущего выбранного квартала.
+  // в зависимости от unit текущего выбранного квартала (или первого, если ничего не выбрано).
   measureModeLabel(mode) {
     if (mode === 'rows_bushes') {
-      const q = this.quarters && this.quarters.find(q => String(q.id) === String(this.ctxQuarter));
-      const unit = q ? q.unit : null;
+      const unit = this.currentUnit(this.ctxQuarter);
       if (unit === 'tree') return 'Ряды + деревья';
       if (unit === 'other') return 'Ряды + растения';
       return 'Ряды + кусты';
@@ -872,8 +892,15 @@ class BrigadeAssistant {
     this.ctxCell = document.getElementById('i2-cell').value;
   }
 
-  onI2WorkTypeChange() {
-    this.ctxWorkType = document.getElementById('i2-worktype').value;
+  onI2WorkTypeChange(kind) {
+    // Две плашки: ручные (i2-worktype) и механизированные (i2-worktype-mech).
+    // При выборе из одной — сбрасываем вторую, чтобы было однозначно один выбор.
+    const selfId = kind === 'mechanized' ? 'i2-worktype-mech' : 'i2-worktype';
+    const otherId = kind === 'mechanized' ? 'i2-worktype' : 'i2-worktype-mech';
+    const selfEl = document.getElementById(selfId);
+    const otherEl = document.getElementById(otherId);
+    this.ctxWorkType = selfEl ? selfEl.value : '';
+    if (this.ctxWorkType && otherEl) otherEl.value = '';
     // Автоподстановка дефолтного режима подсчёта, если он есть у выбранного вида работ
     // и присутствует в списке разрешённых режимов из конфига.
     const wt = this.workTypes.find(w => w.name === this.ctxWorkType);
@@ -896,13 +923,16 @@ class BrigadeAssistant {
   async addWorkType() {
     const input = document.getElementById('i2-new-worktype');
     const name = input ? input.value.trim() : '';
+    const kindEl = document.getElementById('i2-new-worktype-kind');
+    const kind = kindEl ? kindEl.value : 'manual';
+    const default_measure_mode = kind === 'mechanized' ? 'hectares' : 'rows_bushes';
     const msg = document.getElementById('i2-msg');
     if (!name) { if (msg) msg.textContent = '❌ Впиши название вида работ'; return; }
     try {
       const r = await this.apiFetch('/api/work-types', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, kind, default_measure_mode }),
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) { if (msg) msg.textContent = '❌ ' + (data.error || 'Ошибка'); return; }
