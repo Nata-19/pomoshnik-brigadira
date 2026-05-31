@@ -834,7 +834,11 @@ app.post('/api/work-types', authOrDemo, async (req, res) => {
   try {
     const name = (req.body.name || '').trim();
     const mode = (req.body.default_measure_mode || '').trim() || 'rows_bushes';
-    const kind = (req.body.kind === 'mechanized') ? 'mechanized' : 'manual';
+    // На боевом механизированные виды работ запрещены — даже если приходит
+    // kind='mechanized' через прямой запрос, форсим 'manual'. Это покрытие
+    // на случай если кто-то обратится к API минуя UI.
+    const requestedKind = (req.body.kind === 'mechanized') ? 'mechanized' : 'manual';
+    const kind = DEMO_MODE ? requestedKind : 'manual';
     if (!name) {
       return res.status(400).json({ error: 'Укажи название вида работ' });
     }

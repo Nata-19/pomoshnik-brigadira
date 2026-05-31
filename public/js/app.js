@@ -566,20 +566,22 @@ class BrigadeAssistant {
             <option value="">Клетка...</option>
           </select>
           <select id="i2-worktype" class="chip-select" required onchange="app.onI2WorkTypeChange('manual')">
-            <option value="">Вид работ (ручные)...</option>
+            <option value="">${this.config.demoMode ? 'Вид работ (ручные)...' : 'Вид работ...'}</option>
             ${this.workTypes.filter(w => (w.kind || 'manual') !== 'mechanized').map(w => `<option value="${this.escapeHtml(w.name)}" ${w.name === this.ctxWorkType ? 'selected' : ''}>${this.escapeHtml(w.name)}</option>`).join('')}
           </select>
+          ${this.config.demoMode ? `
           <select id="i2-worktype-mech" class="chip-select" onchange="app.onI2WorkTypeChange('mechanized')">
             <option value="">🚜 Механизированные...</option>
             ${this.workTypes.filter(w => w.kind === 'mechanized').map(w => `<option value="${this.escapeHtml(w.name)}" ${w.name === this.ctxWorkType ? 'selected' : ''}>${this.escapeHtml(w.name)}</option>`).join('')}
-          </select>
+          </select>` : ''}
         </div>
         <div class="add-inline">
           <input type="text" id="i2-new-worktype" placeholder="Новый вид работ" autocomplete="off">
+          ${this.config.demoMode ? `
           <select id="i2-new-worktype-kind" class="chip-select" style="max-width:160px">
             <option value="manual">Ручной</option>
             <option value="mechanized">🚜 Механизированный</option>
-          </select>
+          </select>` : ''}
           <button class="mini-btn" onclick="app.addWorkType()">+ вид работ</button>
         </div>
         <div class="block-label">Как считать:</div>
