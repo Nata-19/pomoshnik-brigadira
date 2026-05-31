@@ -783,9 +783,9 @@ app.get('/api/work-types', authOrDemo, async (req, res) => {
   try {
     let r;
     if (DEMO_MODE) {
-      r = await pool.query('SELECT id, name FROM work_types WHERE demo_session_id=$1 ORDER BY name', [req.demo_session_id]);
+      r = await pool.query('SELECT id, name, default_measure_mode, kind FROM work_types WHERE demo_session_id=$1 ORDER BY name', [req.demo_session_id]);
     } else {
-      r = await pool.query('SELECT id, name FROM work_types ORDER BY name');
+      r = await pool.query('SELECT id, name, default_measure_mode, kind FROM work_types ORDER BY name');
     }
     res.json({ work_types: r.rows });
   } catch (err) {
