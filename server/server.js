@@ -965,13 +965,15 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
     if (!work_type || !work_type.trim()) {
       return res.status(400).json({ error: 'Выбери вид работ' });
     }
-    if (!['rows_bushes', 'rows_only', 'hours'].includes(measure_mode)) {
+    if (!MEASURE_MODES.includes(measure_mode)) {
       return res.status(400).json({ error: 'Неизвестный режим подсчёта' });
     }
 
     let rowsStr = '';
     let bushes = 0;
     let hoursVal = null;
+    let hectaresVal = null;
+    let kilometersVal = null;
 
     if (measure_mode === 'hours') {
       const h = parseInt(hours, 10);
@@ -979,6 +981,18 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
         return res.status(400).json({ error: 'Укажи часы числом' });
       }
       hoursVal = h;
+    } else if (measure_mode === 'hectares') {
+      const v = parseFloat(req.body.hectares);
+      if (!isFinite(v) || v <= 0) {
+        return res.status(400).json({ error: 'Укажи гектары числом' });
+      }
+      hectaresVal = v;
+    } else if (measure_mode === 'kilometers') {
+      const v = parseFloat(req.body.kilometers);
+      if (!isFinite(v) || v <= 0) {
+        return res.status(400).json({ error: 'Укажи километры числом' });
+      }
+      kilometersVal = v;
     } else {
       if (!quarter || !cell) {
         return res.status(400).json({ error: 'Выбери клетку' });
@@ -1023,12 +1037,12 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
       }
       const ins = await pool.query(
         `INSERT INTO work_logs
-          (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, demo_session_id, work_type, measure_mode, hours)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, demo_session_id, work_type, measure_mode, hours, hectares, kilometers)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          RETURNING id`,
         [date, estate, quarter ? String(quarter) : '', cell ? String(cell) : '',
          employee.trim(), rowsStr, bushes, 0, req.demo_session_id,
-         work_type.trim(), measure_mode, hoursVal]
+         work_type.trim(), measure_mode, hoursVal, hectaresVal, kilometersVal]
       );
       return res.json({ success: true, id: ins.rows[0].id });
     }
@@ -1053,12 +1067,12 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
 
     const ins = await pool.query(
       `INSERT INTO work_logs
-        (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, work_type, measure_mode, hours)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, work_type, measure_mode, hours, hectares, kilometers)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING id`,
       [date, estate, quarter ? String(quarter) : '', cell ? String(cell) : '',
        employee.trim(), rowsStr, bushes, req.brigadier.id,
-       work_type.trim(), measure_mode, hoursVal]
+       work_type.trim(), measure_mode, hoursVal, hectaresVal, kilometersVal]
     );
     res.json({ success: true, id: ins.rows[0].id });
   } catch (error) {
