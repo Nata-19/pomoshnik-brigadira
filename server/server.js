@@ -203,6 +203,10 @@ const getSecret = () => SESSION_SECRET;
         UNIQUE (demo_session_id, quarter_key)
       )
     `);
+    // Хозяйство одно (одна demo-сессия), но культур внутри несколько.
+    // Колонка culture группирует кварталы по культурам — каждая культура
+    // становится отдельной «плашкой» в выпадающем «Выбор культуры».
+    await pool.query(`ALTER TABLE demo_quarters ADD COLUMN IF NOT EXISTS culture TEXT`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS demo_cells (
         id SERIAL PRIMARY KEY,

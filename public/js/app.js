@@ -407,7 +407,7 @@ class BrigadeAssistant {
             ${this.config.demoMode ? `<button class="mini-btn" onclick="app.renderCultureModal('add')">+ ещё культура</button>` : ''}
             ${!this.config.demoMode ? `<button class="logout-btn" onclick="app.logout()">Выйти</button>` : ''}
             <select id="estate-sel" class="estate-chip" required onchange="app.onEstateChange()">
-              <option value="">📍 Выбор хозяйства</option>
+              <option value="">${this.config.demoMode ? '🌳 Выбор культуры' : '📍 Выбор хозяйства'}</option>
               ${this.estates.map(e => `<option value="${e.id}" ${e.id === this.estate ? 'selected' : ''}>${this.escapeHtml(e.name)}</option>`).join('')}
             </select>
           </div>
@@ -801,39 +801,14 @@ class BrigadeAssistant {
   }
 
   // Плашка «Всего за день» на Вводе данных.
-  // Группировка: вид работ → квартал/клетка. Суммы рядов и кустов по записям rows_bushes/rows_only.
-  // Часовые/гектарные/километровые записи в эту плашку не входят.
-  // Общий итог по всем видам работ НЕ показываем — это семантически некорректно (нельзя складывать ряды разных работ).
+  // Группировка такая же как в Отчёте за период, только за один день — по запросу
+  // Натали: «всё что бригадир ввёл во Вводе данных» с разрезом работник → вид работ.
   renderDailyTotalsHtml() {
     if (!this.entries || this.entries.length === 0) {
       return '<p class="chips-empty">Пока пусто.</p>';
     }
-    const byWt = new Map();
-    for (const log of this.entries) {
-      if (log.measure_mode !== 'rows_bushes' && log.measure_mode !== 'rows_only') continue;
-      const rowCount = String(log.rows || '').split(',').filter(x => x.trim()).length;
-      const bushes = Number(log.bushes) || 0;
-      const wt = log.work_type || '—';
-      if (!byWt.has(wt)) byWt.set(wt, new Map());
-      const byCell = byWt.get(wt);
-      const cellKey = `Кв.${log.quarter || '?'}, клет.${log.cell || '?'}`;
-      if (!byCell.has(cellKey)) byCell.set(cellKey, { rows: 0, bushes: 0 });
-      const agg = byCell.get(cellKey);
-      agg.rows += rowCount;
-      agg.bushes += bushes;
-    }
-    if (byWt.size === 0) {
-      return '<p class="chips-empty">Ручных записей пока нет.</p>';
-    }
-    const wtBlocks = [];
-    for (const [wt, byCell] of byWt) {
-      const cellLines = [];
-      for (const [cellKey, agg] of byCell) {
-        cellLines.push(`<div class="total-cell-row"><span>${this.escapeHtml(cellKey)}</span><span>${agg.rows} рядов, ${agg.bushes} кустов</span></div>`);
-      }
-      wtBlocks.push(`<div class="total-wt-block"><div class="total-wt-head">${this.escapeHtml(wt)}</div>${cellLines.join('')}</div>`);
-    }
-    return wtBlocks.join('');
+    const byEmp = this.groupLogsByEmployee(this.entries);
+    return this.renderEmployeeReportHtml(byEmp);
   }
 
   // HTML карточек записей за выбранную дату.

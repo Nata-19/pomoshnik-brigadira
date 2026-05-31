@@ -115,13 +115,13 @@ async function seedEstate(pool, sessionId, culture, unit) {
     [culture, unit, sessionId]
   );
 
-  // 2 квартала. В имени сразу указываем культуру — хозяйство может
-  // содержать несколько культур (виноград + яблоня и т.д.), и пользователю
-  // важно видеть к какому кварталу какая культура относится.
+  // 2 квартала, привязанные к культуре. Хозяйство одно, а культур внутри
+  // может быть несколько — отдельная колонка culture позволяет группировать
+  // кварталы по культуре в выпадающем «Выбор культуры».
   for (let q = 1; q <= 2; q++) {
     const qres = await pool.query(
-      'INSERT INTO demo_quarters (demo_session_id, quarter_key, name, unit) VALUES ($1, $2, $3, $4) RETURNING id',
-      [sessionId, String(q), `Кв.${q} (${culture})`, unit]
+      'INSERT INTO demo_quarters (demo_session_id, quarter_key, name, unit, culture) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [sessionId, String(q), `Кв.${q}`, unit, culture]
     );
     const quarterId = qres.rows[0].id;
     // 5 клеток в каждом
@@ -158,61 +158,65 @@ async function seedEstate(pool, sessionId, culture, unit) {
     }
   }
 
-  // 3 примера записей в журнале
+  // 3 примера записей в журнале. estate_id = название культуры — так задано
+  // в новой модели (каждая культура = отдельный estate).
   // Вчера: Иванов — Обрезка — Кв.1 клет.1 ряды 1-5
   // Вчера: Петров — Обрезка — Кв.1 клет.2 ряды 1-4
   // Позавчера: Сидоров — Опрыскивание — Кв.2 5 гектаров
   await pool.query(
     `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, brigadier_id, demo_session_id)
-     VALUES ($1, 'demo', '1', '1', 'Иванов', '1,2,3,4,5', 685, 'Обрезка', 'rows_bushes', 0, $2)`,
-    [yesterday, sessionId]
+     VALUES ($1, $3, '1', '1', 'Иванов', '1,2,3,4,5', 685, 'Обрезка', 'rows_bushes', 0, $2)`,
+    [yesterday, sessionId, culture]
   );
   await pool.query(
     `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, brigadier_id, demo_session_id)
-     VALUES ($1, 'demo', '1', '2', 'Петров', '1,2,3,4', 555, 'Обрезка', 'rows_bushes', 0, $2)`,
-    [yesterday, sessionId]
+     VALUES ($1, $3, '1', '2', 'Петров', '1,2,3,4', 555, 'Обрезка', 'rows_bushes', 0, $2)`,
+    [yesterday, sessionId, culture]
   );
   await pool.query(
-    `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, brigadier_id, demo_session_id)
-     VALUES ($1, 'demo', '2', '', 'Сидоров', '', 0, 'Опрыскивание', 'hectares', 5, 0, $2)`,
-    [dayBefore, sessionId]
+    `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hectares, brigadier_id, demo_session_id)
+     VALUES ($1, $3, '2', '', 'Сидоров', '', 0, 'Опрыскивание', 'hectares', 5, 0, $2)`,
+    [dayBefore, sessionId, culture]
   );
 }
 
-// Добавляет ещё одну культуру в уже созданное демо-хозяйство: 1 квартал
-// с 5 клетками × 7 рядов. Имя квартала включает культуру. Существующие
-// кварталы не трогает. demo_sessions.culture обновляется конкатенацией
-// ("яблоня + виноград") — это только для отображения в баннере.
+// Добавляет ещё одну культуру в уже созданное демо-хозяйство: 2 квартала
+// с 5 клетками × 7 рядов под эту культуру. Существующие культуры/квартала
+// не трогает. demo_sessions.culture обновляется конкатенацией через " + "
+// (только для отображения в баннере; группировка идёт по demo_quarters.culture).
 async function addCulture(pool, sessionId, culture, unit) {
   // Найти следующий quarter_key — берём max + 1 среди существующих.
   const maxQ = await pool.query(
     "SELECT COALESCE(MAX((quarter_key)::int), 0) AS m FROM demo_quarters WHERE demo_session_id=$1",
     [sessionId]
   );
-  const nextKey = maxQ.rows[0].m + 1;
+  const start = maxQ.rows[0].m + 1;
 
-  const qres = await pool.query(
-    'INSERT INTO demo_quarters (demo_session_id, quarter_key, name, unit) VALUES ($1, $2, $3, $4) RETURNING id',
-    [sessionId, String(nextKey), `Кв.${nextKey} (${culture})`, unit]
-  );
-  const quarterId = qres.rows[0].id;
-  const sampleBushes = [137, 140, 145, 142, 138, 141, 139];
-  for (let c = 1; c <= 5; c++) {
-    const cres = await pool.query(
-      'INSERT INTO demo_cells (quarter_id, cell_key, hectares) VALUES ($1, $2, $3) RETURNING id',
-      [quarterId, String(c), 1.5 + c * 0.3]
+  for (let i = 0; i < 2; i++) {
+    const qKey = start + i;
+    const qres = await pool.query(
+      'INSERT INTO demo_quarters (demo_session_id, quarter_key, name, unit, culture) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [sessionId, String(qKey), `Кв.${qKey}`, unit, culture]
     );
-    const cellId = cres.rows[0].id;
-    for (let row = 1; row <= 7; row++) {
-      await pool.query(
-        'INSERT INTO demo_rows (cell_id, row_num, bushes) VALUES ($1, $2, $3)',
-        [cellId, row, sampleBushes[row - 1]]
+    const quarterId = qres.rows[0].id;
+    const sampleBushes = [137, 140, 145, 142, 138, 141, 139];
+    for (let c = 1; c <= 5; c++) {
+      const cres = await pool.query(
+        'INSERT INTO demo_cells (quarter_id, cell_key, hectares) VALUES ($1, $2, $3) RETURNING id',
+        [quarterId, String(c), 1.5 + c * 0.3]
       );
+      const cellId = cres.rows[0].id;
+      for (let row = 1; row <= 7; row++) {
+        await pool.query(
+          'INSERT INTO demo_rows (cell_id, row_num, bushes) VALUES ($1, $2, $3)',
+          [cellId, row, sampleBushes[row - 1]]
+        );
+      }
     }
   }
 
   // Обновляем demo_sessions.culture — добавляем новую в конец через " + ".
-  // Не дублируем, если уже есть.
+  // Не дублируем, если уже есть. Используется только для баннера.
   const sess = await pool.query('SELECT culture FROM demo_sessions WHERE id=$1', [sessionId]);
   const existing = (sess.rows[0] && sess.rows[0].culture) || '';
   const parts = existing.split(/\s*\+\s*/).filter(Boolean);
@@ -223,21 +227,28 @@ async function addCulture(pool, sessionId, culture, unit) {
   );
 }
 
-// Возвращает объект инвентаря в формате DataParser:
-// { estates: { demo: { name, quarters: { '1': { name, cells: { '1': [{row, bushes}, ...] } } } } } }
+// Возвращает объект инвентаря в формате DataParser, где каждое «estate» —
+// это отдельная культура внутри одного демо-хозяйства. ID estate = название
+// культуры (используется как work_logs.estate_id для жёсткой привязки записей
+// к культуре). В выпадающем UI это будет «Выбор культуры», а не «хозяйства».
 async function getDemoInventory(pool, sessionId) {
-  const sess = await pool.query('SELECT culture, unit FROM demo_sessions WHERE id=$1', [sessionId]);
+  const sess = await pool.query('SELECT culture FROM demo_sessions WHERE id=$1', [sessionId]);
   if (sess.rows.length === 0) return { estates: {} };
-  const culture = sess.rows[0].culture;
-  if (!culture) {
-    return { estates: {} }; // культура ещё не выбрана
+  if (!sess.rows[0].culture) {
+    return { estates: {} }; // ни одной культуры ещё не добавлено
   }
   const qs = await pool.query(
-    'SELECT id, quarter_key, name, unit FROM demo_quarters WHERE demo_session_id=$1 ORDER BY id',
+    'SELECT id, quarter_key, name, unit, culture FROM demo_quarters WHERE demo_session_id=$1 ORDER BY id',
     [sessionId]
   );
-  const quarters = {};
+  // Группируем кварталы по культуре. Каждая культура становится отдельной
+  // записью в estates с тем же набором полей (quarters), что и боевой формат.
+  const estates = {};
   for (const q of qs.rows) {
+    const cultureKey = q.culture || 'без культуры';
+    if (!estates[cultureKey]) {
+      estates[cultureKey] = { name: cultureKey, unit: q.unit, quarters: {} };
+    }
     const cs = await pool.query(
       'SELECT id, cell_key FROM demo_cells WHERE quarter_id=$1 ORDER BY id',
       [q.id]
@@ -250,13 +261,9 @@ async function getDemoInventory(pool, sessionId) {
       );
       cells[c.cell_key] = rs.rows.map(r => ({ row: r.row_num, bushes: r.bushes }));
     }
-    quarters[q.quarter_key] = { name: q.name, unit: q.unit, cells };
+    estates[cultureKey].quarters[q.quarter_key] = { name: q.name, unit: q.unit, cells };
   }
-  return {
-    estates: {
-      demo: { name: `Демо: ${culture}`, unit: sess.rows[0].unit, quarters }
-    }
-  };
+  return { estates };
 }
 
 module.exports = {
