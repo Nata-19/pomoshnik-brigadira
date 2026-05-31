@@ -123,6 +123,8 @@ const getSecret = () => SESSION_SECRET;
     await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS work_type TEXT NOT NULL DEFAULT ''`);
     await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS measure_mode TEXT NOT NULL DEFAULT 'rows_bushes'`);
     await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS hours INTEGER`);
+    await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS hectares NUMERIC(8,2)`);
+    await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS kilometers NUMERIC(8,2)`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS employees (
         id SERIAL PRIMARY KEY,
