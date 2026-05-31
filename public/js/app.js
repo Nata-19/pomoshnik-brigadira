@@ -526,9 +526,15 @@ class BrigadeAssistant {
       <div class="ctx-block">
         <div class="block-label">Добавить запись</div>
         <div class="sel-emp">Сотрудник: <b>${selName ? this.escapeHtml(selName) : '— выбери плашку выше'}</b></div>
-        ${this.measureMode === 'hours'
-          ? '<div class="form-group"><label>Часы:</label><input type="number" id="i2-hours" min="1" inputmode="numeric"></div>'
-          : '<div class="form-group"><label>Ряды (например: 1-5, 9, 11 или 1-5.9.11):</label><input type="text" id="i2-rows" inputmode="numeric"></div>'}
+        ${
+          this.measureMode === 'hours'
+            ? '<div class="form-group"><label>Часы:</label><input type="number" id="i2-hours" min="1" inputmode="numeric"></div>'
+          : this.measureMode === 'hectares'
+            ? '<div class="form-group"><label>Гектары:</label><input type="number" id="i2-hectares" min="0.01" step="0.01" inputmode="decimal"></div>'
+          : this.measureMode === 'kilometers'
+            ? '<div class="form-group"><label>Километры:</label><input type="number" id="i2-kilometers" min="0.01" step="0.01" inputmode="decimal"></div>'
+          : '<div class="form-group"><label>Ряды (например: 1-5, 9, 11 или 1-5.9.11):</label><input type="text" id="i2-rows" inputmode="numeric"></div>'
+        }
         <button id="i2-add-btn" onclick="app.addEntry()">Добавить</button>
         <div id="i2-msg" class="auth-msg"></div>
       </div>
@@ -1004,6 +1010,14 @@ class BrigadeAssistant {
     if (this.measureMode === 'hours') {
       const hoursEl = document.getElementById('i2-hours');
       body.hours = hoursEl ? hoursEl.value : '';
+    } else if (this.measureMode === 'hectares') {
+      if (!this.ctxQuarter) { setMsg('❌ Выбери квартал'); return; }
+      const hEl = document.getElementById('i2-hectares');
+      body.hectares = hEl ? Number(hEl.value || 0) : 0;
+    } else if (this.measureMode === 'kilometers') {
+      if (!this.ctxQuarter) { setMsg('❌ Выбери квартал'); return; }
+      const kEl = document.getElementById('i2-kilometers');
+      body.kilometers = kEl ? Number(kEl.value || 0) : 0;
     } else {
       if (!this.ctxCell) { setMsg('❌ Выбери клетку'); return; }
       const rowsEl = document.getElementById('i2-rows');
