@@ -115,11 +115,13 @@ async function seedEstate(pool, sessionId, culture, unit) {
     [culture, unit, sessionId]
   );
 
-  // 2 квартала
+  // 2 квартала. В имени сразу указываем культуру — хозяйство может
+  // содержать несколько культур (виноград + яблоня и т.д.), и пользователю
+  // важно видеть к какому кварталу какая культура относится.
   for (let q = 1; q <= 2; q++) {
     const qres = await pool.query(
       'INSERT INTO demo_quarters (demo_session_id, quarter_key, name, unit) VALUES ($1, $2, $3, $4) RETURNING id',
-      [sessionId, String(q), `Кв.${q}`, unit]
+      [sessionId, String(q), `Кв.${q} (${culture})`, unit]
     );
     const quarterId = qres.rows[0].id;
     // 5 клеток в каждом
@@ -177,6 +179,50 @@ async function seedEstate(pool, sessionId, culture, unit) {
   );
 }
 
+// Добавляет ещё одну культуру в уже созданное демо-хозяйство: 1 квартал
+// с 5 клетками × 7 рядов. Имя квартала включает культуру. Существующие
+// кварталы не трогает. demo_sessions.culture обновляется конкатенацией
+// ("яблоня + виноград") — это только для отображения в баннере.
+async function addCulture(pool, sessionId, culture, unit) {
+  // Найти следующий quarter_key — берём max + 1 среди существующих.
+  const maxQ = await pool.query(
+    "SELECT COALESCE(MAX((quarter_key)::int), 0) AS m FROM demo_quarters WHERE demo_session_id=$1",
+    [sessionId]
+  );
+  const nextKey = maxQ.rows[0].m + 1;
+
+  const qres = await pool.query(
+    'INSERT INTO demo_quarters (demo_session_id, quarter_key, name, unit) VALUES ($1, $2, $3, $4) RETURNING id',
+    [sessionId, String(nextKey), `Кв.${nextKey} (${culture})`, unit]
+  );
+  const quarterId = qres.rows[0].id;
+  const sampleBushes = [137, 140, 145, 142, 138, 141, 139];
+  for (let c = 1; c <= 5; c++) {
+    const cres = await pool.query(
+      'INSERT INTO demo_cells (quarter_id, cell_key, hectares) VALUES ($1, $2, $3) RETURNING id',
+      [quarterId, String(c), 1.5 + c * 0.3]
+    );
+    const cellId = cres.rows[0].id;
+    for (let row = 1; row <= 7; row++) {
+      await pool.query(
+        'INSERT INTO demo_rows (cell_id, row_num, bushes) VALUES ($1, $2, $3)',
+        [cellId, row, sampleBushes[row - 1]]
+      );
+    }
+  }
+
+  // Обновляем demo_sessions.culture — добавляем новую в конец через " + ".
+  // Не дублируем, если уже есть.
+  const sess = await pool.query('SELECT culture FROM demo_sessions WHERE id=$1', [sessionId]);
+  const existing = (sess.rows[0] && sess.rows[0].culture) || '';
+  const parts = existing.split(/\s*\+\s*/).filter(Boolean);
+  if (!parts.includes(culture)) parts.push(culture);
+  await pool.query(
+    'UPDATE demo_sessions SET culture=$1 WHERE id=$2',
+    [parts.join(' + '), sessionId]
+  );
+}
+
 // Возвращает объект инвентаря в формате DataParser:
 // { estates: { demo: { name, quarters: { '1': { name, cells: { '1': [{row, bushes}, ...] } } } } } }
 async function getDemoInventory(pool, sessionId) {
@@ -224,5 +270,6 @@ module.exports = {
   DEMO_SESSION_TTL_MS,
   requireDemoSession,
   seedEstate,
+  addCulture,
   getDemoInventory,
 };

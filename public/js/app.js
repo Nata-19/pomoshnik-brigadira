@@ -315,18 +315,24 @@ class BrigadeAssistant {
     }
   }
 
-  renderCultureModal() {
+  renderCultureModal(mode) {
+    // mode: 'initial' (по умолчанию) — нет ни одной культуры в сессии;
+    //       'add' — добавляем ещё одну культуру в существующее хозяйство.
+    const isAdd = mode === 'add';
     const root = document.getElementById('root');
     root.innerHTML = `
       <div class="container auth-box">
         ${window.DemoUI.renderDemoBanner(this.config)}
         <h1>${this.config.brandLogo} ${this.config.brandName}</h1>
-        <p class="auth-hint">Введи свою культуру — что у тебя растёт?</p>
+        <p class="auth-hint">${isAdd
+          ? 'Какую культуру добавить в хозяйство?'
+          : 'Введи свою культуру — что у тебя растёт?'}</p>
         <div class="form-group">
           <label>Например: виноград, яблоня, черешня, клубника</label>
           <input type="text" id="culture-input" autofocus>
         </div>
-        <button id="culture-submit" onclick="app.submitCulture()">Продолжить</button>
+        <button id="culture-submit" onclick="app.submitCulture()">${isAdd ? 'Добавить' : 'Продолжить'}</button>
+        ${isAdd ? `<button class="logout-btn" onclick="location.reload()" style="margin-left:8px">← Назад</button>` : ''}
         <div id="culture-msg" class="auth-msg"></div>
       </div>
     `;
@@ -398,6 +404,7 @@ class BrigadeAssistant {
           <div class="app-user">
             ${!this.config.demoMode ? `<span>${this.escapeHtml(this.me ? this.me.login : '')}</span>` : ''}
             ${this.config.demoMode ? window.DemoUI.renderDemoResetButton() : ''}
+            ${this.config.demoMode ? `<button class="mini-btn" onclick="app.renderCultureModal('add')">+ ещё культура</button>` : ''}
             ${!this.config.demoMode ? `<button class="logout-btn" onclick="app.logout()">Выйти</button>` : ''}
             <select id="estate-sel" class="estate-chip" required onchange="app.onEstateChange()">
               <option value="">📍 Выбор хозяйства</option>

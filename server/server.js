@@ -249,13 +249,17 @@ const getSecret = () => SESSION_SECRET;
         END IF;
       END $$;
     `);
+    // Уникальность учитывает kind: «Опрыскивание» бывает и ручное, и механизированное —
+    // это разные виды работ. Старые индексы (без kind) дропаем если они есть.
+    await pool.query(`DROP INDEX IF EXISTS work_types_prod_name_uniq`);
+    await pool.query(`DROP INDEX IF EXISTS work_types_demo_name_uniq`);
     await pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS work_types_prod_name_uniq
-        ON work_types(name) WHERE demo_session_id IS NULL
+      CREATE UNIQUE INDEX IF NOT EXISTS work_types_prod_name_kind_uniq
+        ON work_types(name, kind) WHERE demo_session_id IS NULL
     `);
     await pool.query(`
-      CREATE UNIQUE INDEX IF NOT EXISTS work_types_demo_name_uniq
-        ON work_types(demo_session_id, name) WHERE demo_session_id IS NOT NULL
+      CREATE UNIQUE INDEX IF NOT EXISTS work_types_demo_name_kind_uniq
+        ON work_types(demo_session_id, name, kind) WHERE demo_session_id IS NOT NULL
     `);
 
     // Аналогично для employees: исходный UNIQUE (brigadier_id, name) не учитывал
@@ -366,9 +370,6 @@ if (DEMO_MODE) {
       if (!culture || !culture.trim()) {
         return res.status(400).json({ error: 'Укажи культуру' });
       }
-      if (req.demo_session.culture) {
-        return res.status(400).json({ error: 'Культура уже выбрана для этой сессии' });
-      }
       const detectedUnit = unit || demo.detectUnit(culture);
       if (!detectedUnit) {
         return res.json({ needUnit: true });
@@ -376,8 +377,19 @@ if (DEMO_MODE) {
       if (!['bush', 'tree', 'other'].includes(detectedUnit)) {
         return res.status(400).json({ error: 'unit должен быть bush/tree/other' });
       }
-      await demo.seedEstate(pool, req.demo_session_id, culture.trim(), detectedUnit);
-      res.json({ culture: culture.trim(), unit: detectedUnit });
+      const name = culture.trim();
+      if (req.demo_session.culture) {
+        // Уже была культура — это «+ ещё культура»: добавляем 1 квартал
+        // с инвентарём, не пересоздаём хозяйство.
+        const existing = req.demo_session.culture.split(/\s*\+\s*/).filter(Boolean);
+        if (existing.includes(name)) {
+          return res.status(400).json({ error: 'Эта культура уже добавлена' });
+        }
+        await demo.addCulture(pool, req.demo_session_id, name, detectedUnit);
+        return res.json({ culture: name, unit: detectedUnit, added: true });
+      }
+      await demo.seedEstate(pool, req.demo_session_id, name, detectedUnit);
+      res.json({ culture: name, unit: detectedUnit });
     } catch (err) {
       console.error('demo/culture error:', err);
       res.status(500).json({ error: err.message });
@@ -827,8 +839,8 @@ app.post('/api/work-types', authOrDemo, async (req, res) => {
     }
     if (DEMO_MODE) {
       const exists = await pool.query(
-        'SELECT 1 FROM work_types WHERE demo_session_id = $1 AND LOWER(name) = LOWER($2)',
-        [req.demo_session_id, name]
+        'SELECT 1 FROM work_types WHERE demo_session_id = $1 AND LOWER(name) = LOWER($2) AND kind = $3',
+        [req.demo_session_id, name, kind]
       );
       if (exists.rows.length > 0) {
         return res.status(400).json({ error: 'Такой вид работ уже есть' });
@@ -840,8 +852,8 @@ app.post('/api/work-types', authOrDemo, async (req, res) => {
       return res.json({ work_type: ins.rows[0] });
     }
     const exists = await pool.query(
-      'SELECT 1 FROM work_types WHERE LOWER(name) = LOWER($1)',
-      [name]
+      'SELECT 1 FROM work_types WHERE LOWER(name) = LOWER($1) AND kind = $2',
+      [name, kind]
     );
     if (exists.rows.length > 0) {
       return res.status(400).json({ error: 'Такой вид работ уже есть' });
