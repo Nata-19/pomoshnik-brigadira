@@ -649,10 +649,32 @@ class BrigadeAssistant {
     }).join('');
   }
 
-  // Подпись единицы для конкретной записи. Этап А — пока всегда «кустов».
-  // В Part B будет читать unit из quarter и возвращать «кустов»/«деревьев»/«растений».
+  // Возвращает множественное «кустов»/«деревьев»/«растений» для подписи в журнале и плашке записей.
+  // Ищем unit в кварталах текущего хозяйства; если не найден (старая запись или прод-данные без unit) — fallback «кустов».
   getUnitLabel(log) {
+    if (!log) return 'кустов';
+    const q = this.quarters && this.quarters.find(q => String(q.id) === String(log.quarter) || (q.name && q.name.endsWith('.' + log.quarter)));
+    const unit = q ? q.unit : null;
+    if (unit === 'tree') return 'деревьев';
+    if (unit === 'other') return 'растений';
     return 'кустов';
+  }
+
+  // Подпись на кнопке режима подсчёта. Меняется только для rows_bushes
+  // в зависимости от unit текущего выбранного квартала.
+  measureModeLabel(mode) {
+    if (mode === 'rows_bushes') {
+      const q = this.quarters && this.quarters.find(q => String(q.id) === String(this.ctxQuarter));
+      const unit = q ? q.unit : null;
+      if (unit === 'tree') return 'Ряды + деревья';
+      if (unit === 'other') return 'Ряды + растения';
+      return 'Ряды + кусты';
+    }
+    if (mode === 'rows_only') return 'Только ряды';
+    if (mode === 'hours') return 'Только часы';
+    if (mode === 'hectares') return 'Гектары';
+    if (mode === 'kilometers') return 'Километры';
+    return mode;
   }
 
   // Группировка логов по работнику для Отчёта за период.
