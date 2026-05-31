@@ -15,6 +15,7 @@ const SEED_WORK_TYPES_MANUAL = [
   { name: 'Прополка', default_measure_mode: 'rows_bushes' },
 ];
 const SEED_WORK_TYPES_MECH = [
+  { name: 'Вспашка',          default_measure_mode: 'hectares'   },
   { name: 'Опрыскивание',     default_measure_mode: 'hectares'   },
   { name: 'Культивация',      default_measure_mode: 'hectares'   },
   { name: 'Перегон трактора', default_measure_mode: 'kilometers' },
