@@ -818,13 +818,17 @@ class BrigadeAssistant {
       let measure;
       if (log.measure_mode === 'hours') {
         measure = `${log.hours} часов`;
+      } else if (log.measure_mode === 'hectares') {
+        measure = `${log.hectares != null ? log.hectares : 0} гектаров`;
+      } else if (log.measure_mode === 'kilometers') {
+        measure = `${log.kilometers != null ? log.kilometers : 0} км`;
       } else {
         const rowCount = String(log.rows || '').split(',').filter(x => x.trim()).length;
         measure = `${rowCount} рядов`;
         if (log.measure_mode === 'rows_bushes') measure += ` · ${log.bushes} кустов`;
       }
-      const place = log.measure_mode === 'hours' && !log.quarter
-        ? '' : ` · Кв.${this.escapeHtml(log.quarter)} кл.${this.escapeHtml(log.cell)}`;
+      const place = (!log.quarter)
+        ? '' : ` · Кв.${this.escapeHtml(log.quarter)}${log.cell ? ' кл.' + this.escapeHtml(log.cell) : ''}`;
       return `
         <div class="entry-card">
           <div class="log-info">
