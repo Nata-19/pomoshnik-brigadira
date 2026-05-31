@@ -11,11 +11,13 @@ const CONTACT_PHONE = '+79783116389';
 // В демо — 5 базовых, в проде — все 11. Расширенные «продаются» как
 // «настраивается под предприятие».
 const MEASURE_MODES_DEMO = ['rows_bushes', 'rows_only', 'hours', 'hectares', 'kilometers'];
-const MEASURE_MODES_FULL = [
+const MEASURE_MODES_PROD = ['rows_bushes', 'rows_only', 'hours'];
+// Полный справочник всех поддерживаемых режимов — для расширения под клиентов.
+const MEASURE_MODES_ALL = [
   'rows_bushes', 'rows_only', 'hours', 'hectares', 'kilometers',
   'poles', 'tons', 'linear_meters', 'tons_km', 'hours_km', 'hectares_tons',
 ];
-const MEASURE_MODES = DEMO_MODE ? MEASURE_MODES_DEMO : MEASURE_MODES_FULL;
+const MEASURE_MODES = DEMO_MODE ? MEASURE_MODES_DEMO : MEASURE_MODES_PROD;
 
 // TTL демо-сессии в миллисекундах (24 часа).
 const DEMO_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
