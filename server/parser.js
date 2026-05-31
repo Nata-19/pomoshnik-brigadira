@@ -284,6 +284,16 @@ class DataParser {
     return Array.from(rows).sort((a, b) => a - b);
   }
 
+  // Helper: cellData в инвентаризации может быть в двух форматах:
+  //   1) старый (боевой inventory.json): просто массив [{row, bushes}, ...]
+  //   2) новый (демо): { hectares, rows: [{row, bushes}, ...] }
+  // Этот метод возвращает массив рядов независимо от формата.
+  _rowsOf(cellData) {
+    if (!cellData) return [];
+    if (Array.isArray(cellData)) return cellData;
+    return Array.isArray(cellData.rows) ? cellData.rows : [];
+  }
+
   getBushesCount(estate, quarter, cell, rows) {
     const edata = this.inventory.estates[estate];
     if (!edata) {
@@ -300,18 +310,40 @@ class DataParser {
       throw new Error(`Клетка ${cell} не найдена в квартале ${quarter}`);
     }
 
+    const rowsArr = this._rowsOf(cellData);
     let totalBushes = 0;
     for (const row of rows) {
       // Ряд физически на ферме существует, но в инвентаризации не отмечен —
       // нормальный случай: в ряду погибли все кусты, ждут подсадки. Считаем
       // ряд в общем количестве рядов, прибавляем 0 кустов. Когда кусты будут
       // подсажены — Натали обновит инвентаризацию и подсчёт восстановится.
-      const found = cellData.find(item => item.row === row);
+      const found = rowsArr.find(item => item.row === row);
       if (!found) continue;
       totalBushes += found.bushes;
     }
 
     return totalBushes;
+  }
+
+  // Считает гектары для выбранных рядов клетки: доля выбранных рядов от
+  // общего числа рядов клетки × гектары клетки. Возвращает число
+  // (округлено до 2 знаков), либо бросает если данных нет.
+  getHectaresForRows(estate, quarter, cell, rows) {
+    const edata = this.inventory.estates[estate];
+    if (!edata) throw new Error(`Хозяйство "${estate}" не найдено в инвентаризации`);
+    const qdata = edata.quarters[quarter];
+    if (!qdata) throw new Error(`Квартал ${quarter} не найден в инвентаризации`);
+    const cellData = qdata.cells[cell];
+    if (!cellData) throw new Error(`Клетка ${cell} не найдена в квартале ${quarter}`);
+    const totalRows = this._rowsOf(cellData).length;
+    if (totalRows === 0) throw new Error(`В клетке ${cell} нет рядов в инвентаризации`);
+    const cellHectares = (typeof cellData === 'object' && !Array.isArray(cellData))
+      ? cellData.hectares : null;
+    if (cellHectares == null) {
+      throw new Error(`Для клетки ${cell} не известна площадь в гектарах`);
+    }
+    const ha = (rows.length / totalRows) * Number(cellHectares);
+    return Math.round(ha * 100) / 100;
   }
 
   isValidDate(dateStr) {

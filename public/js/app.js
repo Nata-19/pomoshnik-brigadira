@@ -13,6 +13,7 @@ class BrigadeAssistant {
     this.inputDate = this.getTodayDate();
     this.ctxQuarter = '';         // «держащийся» контекст
     this.ctxCell = '';
+    this.ctxCells = [];           // мульти-выбор клеток для режима «Гектары»
     this.ctxWorkType = '';
     this.measureMode = 'rows_bushes';
     this.selectedEmployeeId = null;
@@ -173,10 +174,18 @@ class BrigadeAssistant {
   }
 
   async loadTodayEntries(date) {
-    if (!this.estate) { this.entries = []; return; }
+    // В демо: плашка «Всего за день» показывает ВСЁ за день по хозяйству,
+    // по всем культурам сразу — один рабочий может работать утром на яблоне,
+    // потом на винограде, обе записи должны быть видны. Поэтому здесь без
+    // фильтра по estate. В проде у бригадира пока одно хозяйство — фильтруем
+    // как раньше для совместимости.
+    if (!this.config.demoMode && !this.estate) { this.entries = []; return; }
     try {
-      const r = await this.apiFetch('/api/logs?date=' + encodeURIComponent(date) +
-        '&estate=' + encodeURIComponent(this.estate));
+      let url = '/api/logs?date=' + encodeURIComponent(date);
+      if (!this.config.demoMode && this.estate) {
+        url += '&estate=' + encodeURIComponent(this.estate);
+      }
+      const r = await this.apiFetch(url);
       const data = await r.json();
       this.entries = (r.ok && data.logs) ? data.logs : [];
     } catch (e) {
@@ -562,9 +571,10 @@ class BrigadeAssistant {
             <option value="">Квартал...</option>
             ${this.quarters.map(q => `<option value="${q.id}" ${q.id === this.ctxQuarter ? 'selected' : ''}>${this.escapeHtml(q.name)}</option>`).join('')}
           </select>
+          ${this.measureMode === 'hectares' ? '' : `
           <select id="i2-cell" class="chip-select" required onchange="app.onI2CellChange()">
             <option value="">Клетка...</option>
-          </select>
+          </select>`}
           <select id="i2-worktype" class="chip-select" required onchange="app.onI2WorkTypeChange('manual')">
             <option value="">${this.config.demoMode ? 'Вид работ (ручные)...' : 'Вид работ...'}</option>
             ${this.workTypes.filter(w => (w.kind || 'manual') !== 'mechanized').map(w => `<option value="${this.escapeHtml(w.name)}" ${w.name === this.ctxWorkType ? 'selected' : ''}>${this.escapeHtml(w.name)}</option>`).join('')}
@@ -588,6 +598,11 @@ class BrigadeAssistant {
         <div class="mode-row">
           ${(this.config.measureModes || []).map(m => modeBtn(m, this.measureModeLabel(m))).join('')}
         </div>
+        ${this.measureMode === 'hectares' ? `
+          <div class="cells-multi-block">
+            <div class="block-label">Клетки (отметь все, на которых работал трактор)</div>
+            <div id="i2-cells-multi" class="cells-multi">Сначала выбери квартал.</div>
+          </div>` : ''}
         ${this.config.demoMode ? `
           <div class="measure-hint">
             ❓ Нужны другие единицы (тонны, столбы, погонные метры, комбинированные)?
@@ -617,10 +632,10 @@ class BrigadeAssistant {
         ${
           this.measureMode === 'hours'
             ? '<div class="form-group"><label>Часы:</label><input type="number" id="i2-hours" min="1" inputmode="numeric"></div>'
-          : this.measureMode === 'hectares'
-            ? '<div class="form-group"><label>Гектары:</label><input type="number" id="i2-hectares" min="0.01" step="0.01" inputmode="decimal"></div>'
           : this.measureMode === 'kilometers'
             ? '<div class="form-group"><label>Километры:</label><input type="number" id="i2-kilometers" min="0.01" step="0.01" inputmode="decimal"></div>'
+          : (this.measureMode === 'rows_bushes' || this.measureMode === 'rows_only' || this.measureMode === 'hectares')
+            ? `<div class="form-group"><label>Ряды (например: 1-5, 9, 11 или 1-5.9.11):</label><input type="text" id="i2-rows" inputmode="numeric">${this.measureMode === 'hectares' ? '<div class="measure-hint">Гектары посчитаются автоматически из выбранных рядов и площади клетки.</div>' : ''}</div>`
           : '<div class="form-group"><label>Ряды (например: 1-5, 9, 11 или 1-5.9.11):</label><input type="text" id="i2-rows" inputmode="numeric"></div>'
         }
         <button id="i2-add-btn" onclick="app.addEntry()">Добавить</button>
@@ -790,9 +805,48 @@ class BrigadeAssistant {
     return mode;
   }
 
-  // Группировка логов по работнику для Отчёта за период.
+  // Сжимает строку списка вида «1,2,3,5,7,8» в «1-3, 5, 7-8» — компактный
+  // диапазон. Используем и для клеток, и для рядов в отчёте.
+  formatRange(str) {
+    if (!str) return '';
+    const nums = String(str).split(',').map(x => x.trim()).filter(Boolean)
+      .map(Number).filter(n => Number.isFinite(n)).sort((a, b) => a - b);
+    if (nums.length === 0) return String(str);
+    const groups = [];
+    let start = nums[0], prev = nums[0];
+    for (let i = 1; i < nums.length; i++) {
+      if (nums[i] === prev + 1) {
+        prev = nums[i];
+      } else {
+        groups.push(start === prev ? `${start}` : `${start}-${prev}`);
+        start = nums[i];
+        prev = nums[i];
+      }
+    }
+    groups.push(start === prev ? `${start}` : `${start}-${prev}`);
+    return groups.join(', ');
+  }
+
+  // Возвращает эмодзи для значка культуры в пометках. По запросу Натали:
+  // деревья (яблоня, груша, слива…) — 🌳, виноград — 🍇 (кисточка),
+  // остальные кусты-ягоды (клубника, малина, смородина и пр.) — 🍓.
+  cultureEmoji(name) {
+    const lc = (name || '').toLowerCase().trim();
+    if (!lc) return '🌳';
+    if (lc.includes('виноград')) return '🍇';
+    const TREES = ['яблон', 'груш', 'слив', 'персик', 'абрикос', 'вишн', 'черешн', 'алыч', 'орех'];
+    if (TREES.some(t => lc.includes(t))) return '🌳';
+    const BERRIES = ['малин', 'смородин', 'ежевик', 'крыжовник', 'клубник', 'голубик', 'жимолост'];
+    if (BERRIES.some(b => lc.includes(b))) return '🍓';
+    return '🌳';
+  }
+
+  // Группировка логов по работнику для Отчёта за период / Всего за день.
   // Возвращает Map: имя работника → массив активностей.
-  // Каждая активность = уникальная пара (вид работ, квартал, клетка, режим) с суммированными цифрами.
+  // Активность = уникальная пара (культура, вид работ, квартал, клетка, режим)
+  // с суммированными цифрами. Культуру (estate_id) включаем в ключ — кварталы
+  // и клетки могут совпадать на разных культурах, без неё записи Иванова на
+  // Кв.1 яблоня и Кв.1 виноград слиплись бы в одну строку.
   groupLogsByEmployee(logs) {
     const byEmp = new Map();
     if (!logs || logs.length === 0) return byEmp;
@@ -800,13 +854,15 @@ class BrigadeAssistant {
       const emp = log.employee || '—';
       if (!byEmp.has(emp)) byEmp.set(emp, new Map());
       const acts = byEmp.get(emp);
-      const key = [log.work_type || '', log.quarter || '', log.cell || '', log.measure_mode || ''].join('||');
+      const key = [log.estate_id || '', log.work_type || '', log.quarter || '', log.cell || '', log.measure_mode || ''].join('||');
       if (!acts.has(key)) {
         acts.set(key, {
+          estate_id: log.estate_id || '',
           work_type: log.work_type || '',
           quarter: log.quarter || '',
           cell: log.cell || '',
           measure_mode: log.measure_mode || '',
+          rows: log.rows || '',
           rowCount: 0,
           bushes: 0,
           hours: 0,
@@ -851,13 +907,14 @@ class BrigadeAssistant {
       const empHead = `<div class="report-emp-head">${this.escapeHtml(emp)}</div>`;
       const lines = acts.map(a => {
         const place = (a.quarter || a.cell)
-          ? `Кв.${this.escapeHtml(a.quarter)}${a.cell ? ', клет.' + this.escapeHtml(a.cell) : ''}`
+          ? `Кв.${this.escapeHtml(a.quarter)}${a.cell ? ', клет.' + this.escapeHtml(this.formatRange(a.cell)) : ''}`
           : '';
         let measure;
         if (a.measure_mode === 'hours') {
           measure = `${a.hours} часов`;
         } else if (a.measure_mode === 'hectares') {
-          measure = `${a.hectares} гектаров`;
+          const rowsRange = a.rows ? `ряды ${this.escapeHtml(this.formatRange(a.rows))}, ` : '';
+          measure = `${rowsRange}${a.hectares} гектаров`;
         } else if (a.measure_mode === 'kilometers') {
           measure = `${a.kilometers} км`;
         } else if (a.measure_mode === 'rows_bushes') {
@@ -865,7 +922,13 @@ class BrigadeAssistant {
         } else {
           measure = `${a.rowCount} рядов`;
         }
-        const wtPlace = `${this.escapeHtml(a.work_type || '—')}${place ? ' · ' + place : ''}`;
+        // В демо estate_id = название культуры. Показываем её в строке
+        // чтобы различать Кв.1 яблоня и Кв.1 виноград (одинаковые номера —
+        // разные культуры). Эмодзи зависит от названия — см. cultureEmoji.
+        const culture = (this.config.demoMode && a.estate_id)
+          ? `${this.cultureEmoji(a.estate_id)} ${this.escapeHtml(a.estate_id)}` : '';
+        const parts = [this.escapeHtml(a.work_type || '—'), culture, place].filter(Boolean);
+        const wtPlace = parts.join(' · ');
         return `<div class="report-emp-act">${wtPlace} — ${measure}</div>`;
       }).join('');
       blocks.push(`<div class="report-emp-block">${empHead}${lines}</div>`);
@@ -894,7 +957,8 @@ class BrigadeAssistant {
       if (log.measure_mode === 'hours') {
         measure = `${log.hours} часов`;
       } else if (log.measure_mode === 'hectares') {
-        measure = `${log.hectares != null ? log.hectares : 0} гектаров`;
+        const rowsRange = log.rows ? `ряды ${this.escapeHtml(this.formatRange(log.rows))}, ` : '';
+        measure = `${rowsRange}${log.hectares != null ? log.hectares : 0} гектаров`;
       } else if (log.measure_mode === 'kilometers') {
         measure = `${log.kilometers != null ? log.kilometers : 0} км`;
       } else {
@@ -903,12 +967,17 @@ class BrigadeAssistant {
         if (log.measure_mode === 'rows_bushes') measure += ` · ${log.bushes} кустов`;
       }
       const place = (!log.quarter)
-        ? '' : ` · Кв.${this.escapeHtml(log.quarter)}${log.cell ? ' кл.' + this.escapeHtml(log.cell) : ''}`;
+        ? '' : ` · Кв.${this.escapeHtml(log.quarter)}${log.cell ? ' кл.' + this.escapeHtml(this.formatRange(log.cell)) : ''}`;
+      // В демо estate_id = название культуры. Показываем в карточке записи,
+      // чтобы было ясно к какой культуре относится Кв./клет. — номера могут
+      // совпадать между культурами. Эмодзи по культуре — см. cultureEmoji.
+      const culture = (this.config.demoMode && log.estate_id)
+        ? ` · ${this.cultureEmoji(log.estate_id)} ${this.escapeHtml(log.estate_id)}` : '';
       return `
         <div class="entry-card">
           <div class="log-info">
             <div class="log-employee">${this.escapeHtml(log.employee)}</div>
-            <div class="log-meta">${this.escapeHtml(log.work_type || '')}${place}</div>
+            <div class="log-meta">${this.escapeHtml(log.work_type || '')}${culture}${place}</div>
             <div class="log-meta">${measure}</div>
           </div>
           <button class="delete-btn" onclick="app.deleteEntry(${log.id})">Удалить</button>
@@ -917,8 +986,29 @@ class BrigadeAssistant {
     }).join('');
   }
 
-  // Загружает клетки выбранного квартала в селект #i2-cell.
+  // Загружает клетки выбранного квартала. В режиме «Гектары» заполняет блок
+  // чекбоксов (#i2-cells-multi) для мульти-выбора — трактор обрабатывает
+  // несколько клеток сразу. В остальных режимах — обычный <select> #i2-cell.
   async refreshI2Cells() {
+    const multi = document.getElementById('i2-cells-multi');
+    if (multi) {
+      if (!this.ctxQuarter) {
+        multi.innerHTML = '<span class="chips-empty">Сначала выбери квартал.</span>';
+        return;
+      }
+      const cells = await this.loadCells(this.ctxQuarter);
+      if (cells.length === 0) {
+        multi.innerHTML = '<span class="chips-empty">В этом квартале нет клеток.</span>';
+        return;
+      }
+      multi.innerHTML = cells.map(c => `
+        <label class="cell-check">
+          <input type="checkbox" value="${c}" ${this.ctxCells.includes(String(c)) ? 'checked' : ''}
+                 onchange="app.toggleCellCheckbox('${c}', this.checked)">
+          <span>Клетка ${c}</span>
+        </label>`).join('');
+      return;
+    }
     const cSel = document.getElementById('i2-cell');
     if (!cSel) return;
     if (!this.ctxQuarter) {
@@ -928,6 +1018,15 @@ class BrigadeAssistant {
     const cells = await this.loadCells(this.ctxQuarter);
     cSel.innerHTML = '<option value="">Клетка...</option>' +
       cells.map(c => `<option value="${c}" ${String(c) === String(this.ctxCell) ? 'selected' : ''}>Клетка ${c}</option>`).join('');
+  }
+
+  toggleCellCheckbox(cell, checked) {
+    const key = String(cell);
+    if (checked) {
+      if (!this.ctxCells.includes(key)) this.ctxCells.push(key);
+    } else {
+      this.ctxCells = this.ctxCells.filter(x => x !== key);
+    }
   }
 
   async onInputDateChange() {
@@ -940,6 +1039,7 @@ class BrigadeAssistant {
   async onI2QuarterChange() {
     this.ctxQuarter = document.getElementById('i2-quarter').value;
     this.ctxCell = '';
+    this.ctxCells = [];
     await this.refreshI2Cells();
   }
 
@@ -966,6 +1066,13 @@ class BrigadeAssistant {
   }
 
   setMeasureMode(mode) {
+    // При смене режима сбрасываем «противоположный» выбор клеток, чтобы
+    // не таскать невидимое состояние между режимами.
+    if (mode === 'hectares') {
+      this.ctxCell = '';
+    } else {
+      this.ctxCells = [];
+    }
     this.measureMode = mode;
     this.renderInput();
   }
@@ -1099,14 +1206,19 @@ class BrigadeAssistant {
     if (this.measureMode === 'hours') {
       const hoursEl = document.getElementById('i2-hours');
       body.hours = hoursEl ? hoursEl.value : '';
-    } else if (this.measureMode === 'hectares') {
-      if (!this.ctxQuarter) { setMsg('❌ Выбери квартал'); return; }
-      const hEl = document.getElementById('i2-hectares');
-      body.hectares = hEl ? Number(hEl.value || 0) : 0;
     } else if (this.measureMode === 'kilometers') {
       if (!this.ctxQuarter) { setMsg('❌ Выбери квартал'); return; }
       const kEl = document.getElementById('i2-kilometers');
       body.kilometers = kEl ? Number(kEl.value || 0) : 0;
+    } else if (this.measureMode === 'hectares') {
+      // Мульти-клетки: одна запись с cell = «1,2,3», сервер суммирует гектары.
+      if (!this.ctxQuarter) { setMsg('❌ Выбери квартал'); return; }
+      if (!this.ctxCells || this.ctxCells.length === 0) {
+        setMsg('❌ Отметь хотя бы одну клетку, где работал трактор'); return;
+      }
+      const rowsEl = document.getElementById('i2-rows');
+      body.rows = rowsEl ? rowsEl.value : '';
+      body.cell = this.ctxCells.slice().sort((a, b) => Number(a) - Number(b)).join(',');
     } else {
       if (!this.ctxCell) { setMsg('❌ Выбери клетку'); return; }
       const rowsEl = document.getElementById('i2-rows');
@@ -1126,6 +1238,7 @@ class BrigadeAssistant {
       if (!r.ok) { setMsg('❌ ' + (data.error || 'Ошибка')); return; }
       await this.loadTodayEntries(this.inputDate);
       this.selectedEmployeeId = null;
+      if (this.measureMode === 'hectares') this.ctxCells = [];
       this.renderInput();
     } catch (e) {
       setMsg('❌ ' + e.message);

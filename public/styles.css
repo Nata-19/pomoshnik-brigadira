@@ -320,6 +320,35 @@ button:active {
     background: #d6d6d6;
 }
 
+.cells-multi-block {
+    margin-top: 8px;
+}
+
+.cells-multi {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 6px;
+}
+
+.cells-multi .cell-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 10px;
+    border: 1px solid #c8d4c0;
+    border-radius: 14px;
+    background: #f7fbf3;
+    font-size: 14px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.cells-multi .cell-check input[type=checkbox] {
+    margin: 0;
+    cursor: pointer;
+}
+
 .auth-msg {
     margin-top: 14px;
     font-size: 14px;

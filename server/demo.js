@@ -250,7 +250,7 @@ async function getDemoInventory(pool, sessionId) {
       estates[cultureKey] = { name: cultureKey, unit: q.unit, quarters: {} };
     }
     const cs = await pool.query(
-      'SELECT id, cell_key FROM demo_cells WHERE quarter_id=$1 ORDER BY id',
+      'SELECT id, cell_key, hectares FROM demo_cells WHERE quarter_id=$1 ORDER BY id',
       [q.id]
     );
     const cells = {};
@@ -259,7 +259,13 @@ async function getDemoInventory(pool, sessionId) {
         'SELECT row_num, bushes FROM demo_rows WHERE cell_id=$1 ORDER BY row_num',
         [c.id]
       );
-      cells[c.cell_key] = rs.rows.map(r => ({ row: r.row_num, bushes: r.bushes }));
+      // Новый формат: клетка = { hectares, rows } вместо просто массива rows.
+      // Парсер умеет читать оба формата (см. parser.js). hectares клетки нужны
+      // чтобы в режиме «Гектары» переводить выбранные ряды в гектары.
+      cells[c.cell_key] = {
+        hectares: c.hectares != null ? Number(c.hectares) : null,
+        rows: rs.rows.map(r => ({ row: r.row_num, bushes: r.bushes })),
+      };
     }
     estates[cultureKey].quarters[q.quarter_key] = { name: q.name, unit: q.unit, cells };
   }

@@ -1024,11 +1024,36 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
       }
       hoursVal = h;
     } else if (measure_mode === 'hectares') {
-      const v = parseFloat(req.body.hectares);
-      if (!isFinite(v) || v <= 0) {
-        return res.status(400).json({ error: 'Укажи гектары числом' });
+      // Бригадир отмечает ряды и несколько клеток сразу (трактор проходит
+      // по нескольким клеткам одного квартала). cell приходит строкой
+      // вида «1,2,3». Считаем гектары на каждую клетку и суммируем —
+      // одна запись с диапазоном клеток и общими гектарами.
+      if (!quarter || !cell) {
+        return res.status(400).json({ error: 'Выбери клетку' });
       }
-      hectaresVal = v;
+      const cellsArr = String(cell).split(',').map(x => x.trim()).filter(Boolean);
+      if (cellsArr.length === 0) {
+        return res.status(400).json({ error: 'Выбери клетку' });
+      }
+      let rowNums;
+      try {
+        rowNums = parserToUse.parseRowList(rows);
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+      rowsStr = rowNums.join(',');
+      let totalHa = 0;
+      for (const c of cellsArr) {
+        try {
+          totalHa += parserToUse.getHectaresForRows(estate, String(quarter), c, rowNums);
+        } catch (e) {
+          return res.status(400).json({ error: `Клет.${c}: ` + e.message });
+        }
+      }
+      hectaresVal = Math.round(totalHa * 100) / 100;
+      if (!isFinite(hectaresVal) || hectaresVal <= 0) {
+        return res.status(400).json({ error: 'Не удалось посчитать гектары' });
+      }
     } else if (measure_mode === 'kilometers') {
       const v = parseFloat(req.body.kilometers);
       if (!isFinite(v) || v <= 0) {
@@ -1130,7 +1155,10 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 app.get('/api/logs', authOrDemo, async (req, res) => {
   try {
     const { date, from, to, estate } = req.query;
-    if (!estate) {
+    // В демо estate может быть не задан (плашка «Всего за день» хочет ВСЁ
+    // за день по всем культурам сразу). В проде estate обязателен — бригадир
+    // явно выбирает хозяйство.
+    if (!DEMO_MODE && !estate) {
       return res.status(400).json({ error: 'Укажи estate' });
     }
     let result;
@@ -1139,19 +1167,37 @@ app.get('/api/logs', authOrDemo, async (req, res) => {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
           return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
         }
-        result = await pool.query(
-          `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, hectares, kilometers, created_at
-           FROM work_logs WHERE date = $1 AND estate_id = $2 AND demo_session_id = $3
-           ORDER BY created_at DESC`,
-          [date, estate, req.demo_session_id]
-        );
+        if (estate) {
+          result = await pool.query(
+            `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, hectares, kilometers, created_at
+             FROM work_logs WHERE date = $1 AND estate_id = $2 AND demo_session_id = $3
+             ORDER BY created_at DESC`,
+            [date, estate, req.demo_session_id]
+          );
+        } else {
+          result = await pool.query(
+            `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, hectares, kilometers, created_at
+             FROM work_logs WHERE date = $1 AND demo_session_id = $2
+             ORDER BY created_at DESC`,
+            [date, req.demo_session_id]
+          );
+        }
       } else if (from && to) {
-        result = await pool.query(
-          `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, hectares, kilometers, created_at
-           FROM work_logs WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND demo_session_id = $4
-           ORDER BY date DESC, created_at DESC`,
-          [from, to, estate, req.demo_session_id]
-        );
+        if (estate) {
+          result = await pool.query(
+            `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, hectares, kilometers, created_at
+             FROM work_logs WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND demo_session_id = $4
+             ORDER BY date DESC, created_at DESC`,
+            [from, to, estate, req.demo_session_id]
+          );
+        } else {
+          result = await pool.query(
+            `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, hectares, kilometers, created_at
+             FROM work_logs WHERE date >= $1 AND date <= $2 AND demo_session_id = $3
+             ORDER BY date DESC, created_at DESC`,
+            [from, to, req.demo_session_id]
+          );
+        }
       } else {
         return res.status(400).json({ error: 'Укажи date или from+to' });
       }
