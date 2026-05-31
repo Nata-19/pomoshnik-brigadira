@@ -864,6 +864,13 @@ class BrigadeAssistant {
 
   onI2WorkTypeChange() {
     this.ctxWorkType = document.getElementById('i2-worktype').value;
+    // Автоподстановка дефолтного режима подсчёта, если он есть у выбранного вида работ
+    // и присутствует в списке разрешённых режимов из конфига.
+    const wt = this.workTypes.find(w => w.name === this.ctxWorkType);
+    if (wt && wt.default_measure_mode && (this.config.measureModes || []).includes(wt.default_measure_mode)) {
+      this.measureMode = wt.default_measure_mode;
+      this.renderInput();
+    }
   }
 
   setMeasureMode(mode) {
