@@ -258,6 +258,26 @@ const getSecret = () => SESSION_SECRET;
         ON work_types(demo_session_id, name) WHERE demo_session_id IS NOT NULL
     `);
 
+    // Аналогично для employees: исходный UNIQUE (brigadier_id, name) не учитывал
+    // demo_session_id, поэтому две демо-сессии не могли иметь одного и того же
+    // «Иванова» (brigadier_id=0 в обеих). Дропаем старое ограничение и делаем
+    // два partial-unique-index'а: прод (demo_session_id IS NULL) и демо (с учётом сессии).
+    await pool.query(`
+      DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'employees_brigadier_id_name_key') THEN
+          ALTER TABLE employees DROP CONSTRAINT employees_brigadier_id_name_key;
+        END IF;
+      END $$;
+    `);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS employees_prod_brig_name_uniq
+        ON employees(brigadier_id, name) WHERE demo_session_id IS NULL
+    `);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS employees_demo_sess_name_uniq
+        ON employees(demo_session_id, name) WHERE demo_session_id IS NOT NULL
+    `);
+
     console.log('✅ Connected to Postgres');
   } catch (err) {
     console.error('❌ Postgres init failed:', err.message);
