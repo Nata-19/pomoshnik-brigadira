@@ -97,7 +97,10 @@ class BrigadeAssistant {
       const r = await fetch('/api/config');
       this.config = await r.json();
     } catch (e) {
-      this.config = { demoMode: false, brandName: 'Помощьник Бригадира', brandLogo: '🍇' };
+      this.config = { demoMode: false, brandName: 'Помощьник Бригадира', brandLogo: '🍇', measureModes: ['rows_bushes', 'rows_only', 'hours'] };
+    }
+    if (!this.config.measureModes) {
+      this.config.measureModes = ['rows_bushes', 'rows_only', 'hours'];
     }
   }
 
@@ -495,10 +498,14 @@ class BrigadeAssistant {
         </div>
         <div class="block-label">Как считать:</div>
         <div class="mode-row">
-          ${modeBtn('rows_bushes', 'Ряды + кусты')}
-          ${modeBtn('rows_only', 'Только ряды')}
-          ${modeBtn('hours', 'Только часы')}
+          ${(this.config.measureModes || []).map(m => modeBtn(m, this.measureModeLabel(m))).join('')}
         </div>
+        ${this.config.demoMode ? `
+          <div class="measure-hint">
+            ❓ Нужны другие единицы (тонны, столбы, погонные метры, комбинированные)?
+            Настраивается под предприятие — звоните Натали ${this.escapeHtml(this.config.contactPhone || '+79783116389')}
+          </div>
+        ` : ''}
       </div>
 
       <div class="ctx-block">
