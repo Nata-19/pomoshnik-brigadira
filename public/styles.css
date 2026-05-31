@@ -285,6 +285,41 @@ button:active {
     margin-bottom: 16px;
 }
 
+.culture-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.culture-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.culture-row .culture-name {
+    flex: 1;
+    padding: 7px 10px;
+    border-radius: 12px;
+    border: 1px solid #bbb;
+    font-size: 14px;
+}
+
+.culture-row .culture-del {
+    background: #e7e7e7;
+    color: #555;
+    border: 1px solid #ccc;
+    border-radius: 12px;
+    padding: 4px 9px;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.culture-row .culture-del:hover {
+    background: #d6d6d6;
+}
+
 .auth-msg {
     margin-top: 14px;
     font-size: 14px;

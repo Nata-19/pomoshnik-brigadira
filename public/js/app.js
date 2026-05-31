@@ -316,8 +316,9 @@ class BrigadeAssistant {
   }
 
   renderCultureModal(mode) {
-    // mode: 'initial' (по умолчанию) — нет ни одной культуры в сессии;
-    //       'add' — добавляем ещё одну культуру в существующее хозяйство.
+    // mode: 'initial' (по умолчанию) — нет ни одной культуры в сессии,
+    //         одно поле, культуры через запятую («яблоня, виноград, клубника»);
+    //       'add' — добавляем одну ещё в существующее хозяйство (тоже одно поле).
     const isAdd = mode === 'add';
     const root = document.getElementById('root');
     root.innerHTML = `
@@ -326,45 +327,115 @@ class BrigadeAssistant {
         <h1>${this.config.brandLogo} ${this.config.brandName}</h1>
         <p class="auth-hint">${isAdd
           ? 'Какую культуру добавить в хозяйство?'
-          : 'Введи свою культуру — что у тебя растёт?'}</p>
+          : 'Какие культуры у тебя растут? Перечисли через запятую.'}</p>
         <div class="form-group">
-          <label>Например: виноград, яблоня, черешня, клубника</label>
-          <input type="text" id="culture-input" autofocus>
+          <input type="text" id="culture-input" autofocus autocomplete="off"
+                 placeholder="${isAdd ? 'яблоня' : 'яблоня, виноград, клубника'}">
         </div>
-        <button id="culture-submit" onclick="app.submitCulture()">${isAdd ? 'Добавить' : 'Продолжить'}</button>
-        ${isAdd ? `<button class="logout-btn" onclick="location.reload()" style="margin-left:8px">← Назад</button>` : ''}
+        <div>
+          <button id="culture-submit" onclick="app.submitCultures()">${isAdd ? 'Добавить' : 'Готово — создать песочницу'}</button>
+          ${isAdd ? `<button class="logout-btn" onclick="location.reload()" style="margin-left:8px">← Назад</button>` : ''}
+        </div>
         <div id="culture-msg" class="auth-msg"></div>
       </div>
     `;
   }
 
-  async submitCulture() {
-    const culture = document.getElementById('culture-input').value.trim();
+  // Разбирает строку из поля #culture-input по запятой и отправляет каждую
+  // культуру по очереди. Сервер сам угадывает (яблоня → дерево и т.д.);
+  // если культуру не узнал — покажем одноразовый выбор «дерево/куст/другое»
+  // только для неё, потом продолжаем очередь.
+  async submitCultures() {
+    const input = document.getElementById('culture-input');
     const msg = document.getElementById('culture-msg');
     const btn = document.getElementById('culture-submit');
-    if (!culture) { msg.textContent = '❌ Укажи культуру'; return; }
+    if (!input) return;
+    const raw = input.value || '';
+    const names = [];
+    for (const part of raw.split(',')) {
+      const name = part.trim();
+      if (name && !names.find(n => n.toLowerCase() === name.toLowerCase())) names.push(name);
+    }
+    if (names.length === 0) {
+      msg.textContent = '❌ Укажи хотя бы одну культуру';
+      return;
+    }
     msg.textContent = '⏳ Готовим твою песочницу…';
     if (btn) btn.disabled = true;
+    this._cultureQueue = names;
+    await this._processCultureQueue();
+  }
+
+  async _processCultureQueue() {
+    while (this._cultureQueue && this._cultureQueue.length > 0) {
+      const name = this._cultureQueue[0];
+      try {
+        const r = await fetch('/api/demo/culture', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ culture: name }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (data.needUnit) {
+          this._renderUnitChoiceForQueue(name);
+          return;
+        }
+        if (!r.ok) {
+          const msg = document.getElementById('culture-msg');
+          if (msg) msg.textContent = `❌ «${name}»: ${data.error || 'ошибка'}`;
+          const btn = document.getElementById('culture-submit');
+          if (btn) btn.disabled = false;
+          return;
+        }
+        this._cultureQueue.shift();
+      } catch (e) {
+        const msg = document.getElementById('culture-msg');
+        if (msg) msg.textContent = '❌ ' + e.message;
+        const btn = document.getElementById('culture-submit');
+        if (btn) btn.disabled = false;
+        return;
+      }
+    }
+    location.reload();
+  }
+
+  _renderUnitChoiceForQueue(culture) {
+    const root = document.getElementById('root');
+    root.innerHTML = `
+      <div class="container auth-box">
+        ${window.DemoUI.renderDemoBanner(this.config)}
+        <h1>${this.config.brandLogo} ${this.config.brandName}</h1>
+        <p class="auth-hint">Не узнал культуру «${this.escapeHtml(culture)}». Что считаем?</p>
+        <button onclick="app._answerQueueUnit('bush')">🌱 Кусты</button>
+        <button onclick="app._answerQueueUnit('tree')">🌳 Деревья</button>
+        <button onclick="app._answerQueueUnit('other')">🌾 Другое (растения)</button>
+        <div id="unit-msg" class="auth-msg"></div>
+      </div>
+    `;
+    this._pendingUnitFor = culture;
+  }
+
+  async _answerQueueUnit(unit) {
+    const culture = this._pendingUnitFor;
+    if (!culture) return;
+    const msgEl = document.getElementById('unit-msg');
+    if (msgEl) msgEl.textContent = '⏳ Готовим…';
     try {
       const r = await fetch('/api/demo/culture', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ culture }),
+        body: JSON.stringify({ culture, unit }),
       });
-      const data = await r.json();
-      if (data.needUnit) {
-        this.renderUnitChoice(culture);
-        return;
-      }
       if (!r.ok) {
-        msg.textContent = '❌ ' + (data.error || 'Ошибка');
-        if (btn) btn.disabled = false;
+        const data = await r.json().catch(() => ({}));
+        if (msgEl) msgEl.textContent = `❌ «${culture}»: ${data.error || 'ошибка'}`;
         return;
       }
-      location.reload();
+      this._cultureQueue.shift();
+      this._pendingUnitFor = null;
+      await this._processCultureQueue();
     } catch (e) {
-      msg.textContent = '❌ ' + e.message;
-      if (btn) btn.disabled = false;
+      if (msgEl) msgEl.textContent = '❌ ' + e.message;
     }
   }
 
