@@ -349,6 +349,58 @@ button:active {
     cursor: pointer;
 }
 
+/* Отчёт за период двумя блоками (демо, Этап 6) */
+.report-block {
+    margin: 14px 0;
+    padding: 10px 12px;
+    border: 1px solid #d9e7c8;
+    border-radius: 12px;
+    background: #f7fbf3;
+}
+
+.report-block-head {
+    font-weight: 600;
+    font-size: 16px;
+    margin-bottom: 8px;
+    color: #2c3e50;
+}
+
+.report-group {
+    margin: 8px 0 10px 0;
+    padding-left: 8px;
+    border-left: 3px solid #b9d3a3;
+}
+
+.report-group-head {
+    font-weight: 600;
+    color: #34495e;
+    margin-bottom: 4px;
+}
+
+.report-line {
+    padding: 3px 0 3px 14px;
+    color: #333;
+    font-size: 14px;
+}
+
+.report-block-totals {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px dashed #b9d3a3;
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+.report-grand-totals {
+    margin-top: 14px;
+    padding: 10px 12px;
+    background: #eef5e3;
+    border-radius: 10px;
+    font-weight: 600;
+    color: #2c3e50;
+    font-size: 15px;
+}
+
 .auth-msg {
     margin-top: 14px;
     font-size: 14px;

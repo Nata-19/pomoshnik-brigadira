@@ -846,6 +846,14 @@ class BrigadeAssistant {
     return groups.join(', ');
   }
 
+  // Определяет kind ('manual'|'mechanized') по name из загруженного списка
+  // видов работ. Если работа не нашлась (удалена) — считаем manual.
+  kindOfWorkType(name) {
+    if (!name) return 'manual';
+    const wt = (this.workTypes || []).find(w => w.name === name);
+    return wt && wt.kind === 'mechanized' ? 'mechanized' : 'manual';
+  }
+
   // Возвращает эмодзи для значка культуры в пометках. По запросу Натали:
   // деревья (яблоня, груша, слива…) — 🌳, виноград — 🍇 (кисточка),
   // остальные кусты-ягоды (клубника, малина, смородина и пр.) — 🍓.
@@ -953,6 +961,169 @@ class BrigadeAssistant {
       blocks.push(`<div class="report-emp-block">${empHead}${lines}</div>`);
     }
     return blocks.join('');
+  }
+
+  // Демо Этап 6: Отчёт за период двумя блоками — 🛠 Ручные и 🚜 Мехраб.
+  // Главная точка входа: getReport вызывает её при demoMode.
+  renderTwoBlocksReportHtml(logs) {
+    const manualLogs = (logs || []).filter(l => this.kindOfWorkType(l.work_type) !== 'mechanized');
+    const mechLogs = (logs || []).filter(l => this.kindOfWorkType(l.work_type) === 'mechanized');
+    const manualBlock = manualLogs.length > 0 ? this.renderManualBlockHtml(manualLogs) : '';
+    const mechBlock = mechLogs.length > 0 ? this.renderMechBlockHtml(mechLogs) : '';
+    if (!manualBlock && !mechBlock) {
+      return '<p class="chips-empty">За этот период записей нет.</p>';
+    }
+    const grand = this.renderGrandTotalsHtml(manualLogs, mechLogs);
+    return manualBlock + mechBlock + grand;
+  }
+
+  // Группировка для ручного блока: внешний ключ — вид работ + культура,
+  // внутри — работники с агрегированными цифрами по (работник, кв, клет, режим).
+  groupManualLogs(logs) {
+    const groups = new Map();
+    for (const log of logs) {
+      const wt = log.work_type || '';
+      const est = log.estate_id || '';
+      const gKey = `${wt}||${est}`;
+      if (!groups.has(gKey)) {
+        groups.set(gKey, { work_type: wt, estate: est, rows: new Map() });
+      }
+      const innerMap = groups.get(gKey).rows;
+      const inKey = [log.employee || '—', log.quarter || '', log.cell || '', log.measure_mode || ''].join('|');
+      if (!innerMap.has(inKey)) {
+        innerMap.set(inKey, {
+          employee: log.employee || '—',
+          quarter: log.quarter || '',
+          cell: log.cell || '',
+          measure_mode: log.measure_mode || '',
+          rowCount: 0,
+          bushes: 0,
+          hours: 0,
+        });
+      }
+      const it = innerMap.get(inKey);
+      it.rowCount += String(log.rows || '').split(',').filter(x => x.trim()).length;
+      it.bushes += Number(log.bushes) || 0;
+      it.hours += Number(log.hours) || 0;
+    }
+    const arr = Array.from(groups.values()).map(g => ({
+      work_type: g.work_type,
+      estate: g.estate,
+      rowsList: Array.from(g.rows.values()).sort((a, b) => {
+        const byEmp = (a.employee || '').localeCompare(b.employee || '', 'ru');
+        if (byEmp !== 0) return byEmp;
+        const aq = Number(a.quarter) || 0;
+        const bq = Number(b.quarter) || 0;
+        if (aq !== bq) return aq - bq;
+        const ac = Number(a.cell) || 0;
+        const bc = Number(b.cell) || 0;
+        return ac - bc;
+      }),
+    }));
+    arr.sort((a, b) => {
+      const byWt = (a.work_type || '').localeCompare(b.work_type || '', 'ru');
+      if (byWt !== 0) return byWt;
+      return (a.estate || '').localeCompare(b.estate || '', 'ru');
+    });
+    return arr;
+  }
+
+  renderManualBlockHtml(logs) {
+    const groups = this.groupManualLogs(logs);
+    const groupBlocks = groups.map(g => {
+      const emoji = this.cultureEmoji(g.estate);
+      const cultureLabel = this.config.demoMode && g.estate
+        ? ` · ${emoji} ${this.escapeHtml(g.estate)}`
+        : '';
+      const head = `<div class="report-group-head">${this.escapeHtml(g.work_type || '—')}${cultureLabel}</div>`;
+      const lines = g.rowsList.map(r => {
+        const place = (r.quarter || r.cell)
+          ? ` · Кв.${this.escapeHtml(r.quarter)}${r.cell ? ', клет.' + this.escapeHtml(this.formatRange(r.cell)) : ''}`
+          : '';
+        let measure;
+        if (r.measure_mode === 'hours') {
+          measure = `${r.hours} часов`;
+        } else if (r.measure_mode === 'rows_bushes') {
+          measure = `${r.rowCount} рядов, ${r.bushes} кустов`;
+        } else {
+          measure = `${r.rowCount} рядов`;
+        }
+        return `<div class="report-line">${this.escapeHtml(r.employee)} — ${measure}${place}</div>`;
+      }).join('');
+      return `<div class="report-group">${head}${lines}</div>`;
+    }).join('');
+    const totals = this._manualTotals(logs);
+    const parts = [];
+    if (totals.rowCount > 0) parts.push(`${totals.rowCount} рядов`);
+    if (totals.bushes > 0) parts.push(`${totals.bushes} кустов`);
+    if (totals.hours > 0) parts.push(`${totals.hours} часов`);
+    const totalLine = parts.length > 0
+      ? `<div class="report-block-totals">Итого руками: ${parts.join(', ')}</div>`
+      : '';
+    return `<div class="report-block">
+      <div class="report-block-head">🛠 Ручные работы</div>
+      ${groupBlocks}
+      ${totalLine}
+    </div>`;
+  }
+
+  renderMechBlockHtml(logs) {
+    // Мехраб группируется по работнику — переиспользуем существующий рендер.
+    const byEmp = this.groupLogsByEmployee(logs);
+    const inner = this.renderEmployeeReportHtml(byEmp);
+    const totals = this._mechTotals(logs);
+    const parts = [];
+    if (totals.hectares > 0) parts.push(`${totals.hectares} га`);
+    if (totals.kilometers > 0) parts.push(`${totals.kilometers} км`);
+    if (totals.hours > 0) parts.push(`${totals.hours} часов`);
+    const totalLine = parts.length > 0
+      ? `<div class="report-block-totals">Итого техникой: ${parts.join(', ')}</div>`
+      : '';
+    return `<div class="report-block">
+      <div class="report-block-head">🚜 Механизированные работы</div>
+      ${inner}
+      ${totalLine}
+    </div>`;
+  }
+
+  renderGrandTotalsHtml(manualLogs, mechLogs) {
+    const m = this._manualTotals(manualLogs);
+    const e = this._mechTotals(mechLogs);
+    const manualParts = [];
+    if (m.rowCount > 0) manualParts.push(`${m.rowCount} рядов`);
+    if (m.bushes > 0) manualParts.push(`${m.bushes} кустов`);
+    if (m.hours > 0) manualParts.push(`${m.hours} часов`);
+    const mechParts = [];
+    if (e.hectares > 0) mechParts.push(`${e.hectares} га`);
+    if (e.kilometers > 0) mechParts.push(`${e.kilometers} км`);
+    if (e.hours > 0) mechParts.push(`${e.hours} часов`);
+    const bits = [];
+    if (manualParts.length > 0) bits.push(`руками — ${manualParts.join(', ')}`);
+    if (mechParts.length > 0) bits.push(`техникой — ${mechParts.join(', ')}`);
+    if (bits.length === 0) return '';
+    return `<div class="report-grand-totals">Всего за период: ${bits.join('; ')}.</div>`;
+  }
+
+  _manualTotals(logs) {
+    const t = { rowCount: 0, bushes: 0, hours: 0 };
+    for (const log of logs || []) {
+      t.rowCount += String(log.rows || '').split(',').filter(x => x.trim()).length;
+      t.bushes += Number(log.bushes) || 0;
+      if (log.measure_mode === 'hours') t.hours += Number(log.hours) || 0;
+    }
+    return t;
+  }
+
+  _mechTotals(logs) {
+    const t = { hectares: 0, kilometers: 0, hours: 0 };
+    for (const log of logs || []) {
+      if (log.measure_mode === 'hectares') t.hectares += Number(log.hectares) || 0;
+      else if (log.measure_mode === 'kilometers') t.kilometers += Number(log.kilometers) || 0;
+      else if (log.measure_mode === 'hours') t.hours += Number(log.hours) || 0;
+    }
+    t.hectares = Math.round(t.hectares * 100) / 100;
+    t.kilometers = Math.round(t.kilometers * 100) / 100;
+    return t;
   }
 
   // Плашка «Всего за день» на Вводе данных.
@@ -1388,9 +1559,15 @@ class BrigadeAssistant {
         resultDiv.innerHTML = '<p style="color:#888;padding:10px;">За этот период записей нет.</p>';
         return;
       }
-      const byEmp = this.groupLogsByEmployee(data.logs);
       const header = `<div class="report-header">Отчёт с ${this.escapeHtml(from)} по ${this.escapeHtml(to)}</div>`;
-      resultDiv.innerHTML = header + this.renderEmployeeReportHtml(byEmp);
+      if (this.config.demoMode) {
+        // Этап 6: два блока — 🛠 Ручные и 🚜 Механизированные.
+        resultDiv.innerHTML = header + this.renderTwoBlocksReportHtml(data.logs);
+      } else {
+        // Прод: один блок «по работникам» как раньше.
+        const byEmp = this.groupLogsByEmployee(data.logs);
+        resultDiv.innerHTML = header + this.renderEmployeeReportHtml(byEmp);
+      }
     } catch (e) {
       resultDiv.innerHTML = '<p style="color:#c0392b;padding:10px;">❌ ' + e.message + '</p>';
     }
