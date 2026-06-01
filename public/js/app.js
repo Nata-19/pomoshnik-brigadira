@@ -541,6 +541,24 @@ class BrigadeAssistant {
       </div>
     `;
     this.renderInput();
+    this.applyFlatpickr();
+  }
+
+  // Превращает нативные <input type="date"> в красивый календарь flatpickr
+  // с русскими названиями месяцев («15 января 2026»). Внутренние значения
+  // остаются YYYY-MM-DD, бэкенду ничего менять не надо.
+  applyFlatpickr() {
+    if (typeof flatpickr === 'undefined') return;
+    document.querySelectorAll('input[type="date"]').forEach(el => {
+      if (el._flatpickr) return; // уже применено
+      flatpickr(el, {
+        locale: 'ru',
+        dateFormat: 'Y-m-d',
+        altInput: true,
+        altFormat: 'j F Y',
+        allowInput: true,
+      });
+    });
   }
 
   switchTab(evt, tab) {
@@ -653,6 +671,7 @@ class BrigadeAssistant {
       </div>
     `;
     this.refreshI2Cells();
+    this.applyFlatpickr();
   }
 
   // Имя выбранного сотрудника (по id из this.present).
@@ -1328,7 +1347,10 @@ class BrigadeAssistant {
     const to = document.getElementById('to-date').value;
     const resultDiv = document.getElementById('report-result');
 
-    if (!this.estate) {
+    // В демо отчёт показывает все культуры сразу — рабочие работают на разных
+    // культурах, и в отчёте должны быть все. В проде у бригадира одно
+    // хозяйство, фильтруем по нему как раньше.
+    if (!this.config.demoMode && !this.estate) {
       this.showResult('❌ Сначала выбери хозяйство', true, resultDiv);
       return;
     }
@@ -1346,7 +1368,11 @@ class BrigadeAssistant {
     resultDiv.innerHTML = '<p style="padding:10px;">⏳ Загрузка отчёта...</p>';
 
     try {
-      const r = await fetch(`/api/logs?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&estate=${encodeURIComponent(this.estate)}`);
+      let url = `/api/logs?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+      if (!this.config.demoMode && this.estate) {
+        url += `&estate=${encodeURIComponent(this.estate)}`;
+      }
+      const r = await fetch(url);
       const data = await r.json();
       if (!r.ok) {
         resultDiv.innerHTML = '<p style="color:#c0392b;padding:10px;">❌ ' + (data.error || 'Не удалось получить отчёт') + '</p>';
