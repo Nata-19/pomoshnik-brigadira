@@ -1294,7 +1294,9 @@ class BrigadeAssistant {
   async loadLogs() {
     const date = document.getElementById('logs-date').value;
     const list = document.getElementById('logs-list');
-    if (!this.estate) {
+    // В демо журнал показывает ВСЕ записи бригадира за день по всем культурам.
+    // В проде у бригадира одно хозяйство — фильтруем по estate как раньше.
+    if (!this.config.demoMode && !this.estate) {
       list.innerHTML = '<p style="color:#888;padding:10px;">Сначала выбери хозяйство</p>';
       return;
     }
@@ -1304,7 +1306,11 @@ class BrigadeAssistant {
     }
     list.innerHTML = '<p style="padding:10px;">⏳ Загрузка...</p>';
     try {
-      const r = await fetch('/api/logs?date=' + encodeURIComponent(date) + '&estate=' + encodeURIComponent(this.estate));
+      let url = '/api/logs?date=' + encodeURIComponent(date);
+      if (!this.config.demoMode && this.estate) {
+        url += '&estate=' + encodeURIComponent(this.estate);
+      }
+      const r = await fetch(url);
       const data = await r.json();
       if (!r.ok) {
         list.innerHTML = '<p style="color:#c0392b;padding:10px;">❌ ' + (data.error || 'Ошибка') + '</p>';
