@@ -35,6 +35,8 @@ class BrigadeAssistant {
       const r = await fetch('/api/estates');
       const estates = await r.json();
       if (estates.length === 0) {
+        // На стартовой странице ввода культур гайд не запускаем — там и так
+        // одно понятное поле ввода, облако только мешало бы.
         this.renderCultureModal();
         return;
       }
@@ -46,6 +48,7 @@ class BrigadeAssistant {
       await this.loadAttendance(this.inputDate);
       await this.loadTodayEntries(this.inputDate);
       this.render();
+      this._maybeAutoStartGuide();
       return;
     }
 
@@ -342,7 +345,7 @@ class BrigadeAssistant {
                  placeholder="${isAdd ? 'яблоня' : 'яблоня, виноград, клубника'}">
         </div>
         <div>
-          <button id="culture-submit" onclick="app.submitCultures()">${isAdd ? 'Добавить' : 'Готово — создать песочницу'}</button>
+          <button id="culture-submit" onclick="app.submitCultures()">${isAdd ? 'Добавить' : 'Готово — создать хозяйство'}</button>
           ${isAdd ? `<button class="logout-btn" onclick="location.reload()" style="margin-left:8px">← Назад</button>` : ''}
         </div>
         <div id="culture-msg" class="auth-msg"></div>
@@ -369,7 +372,7 @@ class BrigadeAssistant {
       msg.textContent = '❌ Укажи хотя бы одну культуру';
       return;
     }
-    msg.textContent = '⏳ Готовим твою песочницу…';
+    msg.textContent = '⏳ Готовим твоё хозяйство…';
     if (btn) btn.disabled = true;
     this._cultureQueue = names;
     await this._processCultureQueue();
@@ -465,7 +468,7 @@ class BrigadeAssistant {
 
   async submitCultureWithUnit(culture, unit) {
     const msg = document.getElementById('unit-msg');
-    if (msg) msg.textContent = '⏳ Готовим твою песочницу…';
+    if (msg) msg.textContent = '⏳ Готовим твоё хозяйство…';
     await fetch('/api/demo/culture', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -485,6 +488,7 @@ class BrigadeAssistant {
             ${!this.config.demoMode ? `<span>${this.escapeHtml(this.me ? this.me.login : '')}</span>` : ''}
             ${this.config.demoMode ? window.DemoUI.renderDemoResetButton() : ''}
             ${this.config.demoMode ? `<button class="mini-btn" onclick="app.renderCultureModal('add')">+ ещё культура</button>` : ''}
+            ${this.config.demoMode ? `<button class="mini-btn" onclick="app.startGuide()">❓ Как пользоваться</button>` : ''}
             ${!this.config.demoMode ? `<button class="logout-btn" onclick="app.logout()">Выйти</button>` : ''}
             <select id="estate-sel" class="estate-chip" required onchange="app.onEstateChange()">
               <option value="">${this.config.demoMode ? '🌳 Выбор культуры' : '📍 Выбор хозяйства'}</option>
@@ -844,6 +848,179 @@ class BrigadeAssistant {
     }
     groups.push(start === prev ? `${start}` : `${start}-${prev}`);
     return groups.join(', ');
+  }
+
+  // Демо: обучающее облачко с хвостиком, который указывает на нужный элемент
+  // на странице. target — CSS-селектор; если null, облачко по центру экрана.
+  _guideSteps() {
+    return [
+      { target: null, text: 'Привет! Это демо «Помощник Бригадира». Покажу за минуту, как пользоваться.' },
+      { target: '#estate-sel', text: 'В шапке выбери культуру: у каждой свои кварталы, клетки и записи.' },
+      { target: '.chips-row', text: 'Выбери квартал, клетку, вид работ.' },
+      { target: '.mode-row', text: 'Выбери режим «Как считать»: ряды+кусты, ряды, часы, гектары или километры. Активный подсветится синим.' },
+      { target: '.roster-toggle', text: 'Открой список бригады и отметь галочками кто сегодня на работе.' },
+      { target: '.chips', text: 'Нажми на фамилию рабочего — она подсветится синим, значит выбран.' },
+      { target: '#i2-rows', text: 'Введи ряды (например «1-5, 9»).' },
+      { target: '#i2-add-btn', text: 'Жми «Добавить» — запись попадёт в плашку «Всего за день» внизу.' },
+      { target: '.tabs', text: 'Вкладки «Журнал» и «Отчёт за период» покажут что бригадир ввёл.' },
+    ];
+  }
+
+  startGuide() {
+    if (!this.config || !this.config.demoMode) return;
+    this._guideStep = 0;
+    try { localStorage.setItem('demo_guide_step', '0'); } catch (e) {}
+    this._renderGuide();
+  }
+
+  _maybeAutoStartGuide() {
+    if (!this.config || !this.config.demoMode) return;
+    let done = false;
+    let saved = 0;
+    try {
+      done = localStorage.getItem('demo_guide_done') === 'true';
+      saved = parseInt(localStorage.getItem('demo_guide_step') || '0', 10) || 0;
+    } catch (e) {}
+    if (done) return;
+    this._guideStep = Math.max(0, Math.min(saved, this._guideSteps().length - 1));
+    this._renderGuide();
+  }
+
+  nextGuideStep() {
+    this._guideStep = (this._guideStep || 0) + 1;
+    if (this._guideStep >= this._guideSteps().length) {
+      this.closeGuide();
+      return;
+    }
+    try { localStorage.setItem('demo_guide_step', String(this._guideStep)); } catch (e) {}
+    this._renderGuide();
+  }
+
+  closeGuide() {
+    try {
+      localStorage.setItem('demo_guide_done', 'true');
+      localStorage.removeItem('demo_guide_step');
+    } catch (e) {}
+    const el = document.getElementById('demo-guide');
+    if (el) el.remove();
+    this._clearGuideSpotlight();
+    if (this._guideResizeHandler) {
+      window.removeEventListener('resize', this._guideResizeHandler);
+      window.removeEventListener('scroll', this._guideResizeHandler, true);
+      this._guideResizeHandler = null;
+    }
+  }
+
+  _clearGuideSpotlight() {
+    document.querySelectorAll('.guide-spotlight').forEach(el => el.classList.remove('guide-spotlight'));
+  }
+
+  _renderGuide() {
+    let el = document.getElementById('demo-guide');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'demo-guide';
+      document.body.appendChild(el);
+    }
+    const steps = this._guideSteps();
+    const total = steps.length;
+    const idx = this._guideStep || 0;
+    const step = steps[idx];
+    const isLast = idx === total - 1;
+    el.className = 'demo-guide';
+    el.innerHTML = `
+      <div class="demo-guide-inner">
+        <div class="demo-guide-head">Как пользоваться — шаг ${idx + 1} из ${total}</div>
+        <div class="demo-guide-text">${this.escapeHtml(step.text)}</div>
+        <div class="demo-guide-buttons">
+          <button class="demo-guide-next" onclick="app.nextGuideStep()">${isLast ? 'Понятно' : 'Дальше →'}</button>
+          <button class="demo-guide-close" onclick="app.closeGuide()">Закрыть</button>
+        </div>
+      </div>
+    `;
+    this._clearGuideSpotlight();
+    this._positionGuide(el, step.target);
+    // При ресайзе/скролле — перепозиционируем облачко, чтобы не «убежало».
+    if (!this._guideResizeHandler) {
+      this._guideResizeHandler = () => {
+        const steps2 = this._guideSteps();
+        const s = steps2[this._guideStep || 0];
+        const e = document.getElementById('demo-guide');
+        if (e && s) this._positionGuide(e, s.target);
+      };
+      window.addEventListener('resize', this._guideResizeHandler);
+      window.addEventListener('scroll', this._guideResizeHandler, true);
+    }
+  }
+
+  _positionGuide(el, targetSelector) {
+    const CLOUD_W = 380;
+    const CLOUD_H_EST = 220; // примерная высота — реальная меряется после
+    const GAP = 70;          // отступ от цели до облака (под длинный уголок-хвостик)
+    const MARGIN = 12;       // от края экрана
+    el.style.transform = '';
+    // Если цели нет — центруем по экрану, без хвостика.
+    if (!targetSelector) {
+      el.classList.remove('tail-top', 'tail-bottom', 'tail-left', 'tail-right');
+      el.style.left = '50%';
+      el.style.top = '50%';
+      el.style.transform = 'translate(-50%, -50%)';
+      return;
+    }
+    const tgt = document.querySelector(targetSelector);
+    if (!tgt) {
+      // Цель не найдена в DOM — деградируем к центру.
+      el.classList.remove('tail-top', 'tail-bottom', 'tail-left', 'tail-right');
+      el.style.left = '50%';
+      el.style.top = '50%';
+      el.style.transform = 'translate(-50%, -50%)';
+      return;
+    }
+    tgt.classList.add('guide-spotlight');
+    const r = tgt.getBoundingClientRect();
+    const realH = el.offsetHeight || CLOUD_H_EST;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    // Решаем где разместить облачко: предпочитаем СНИЗУ цели (хвостик вверху).
+    // Если снизу не помещается — пробуем сверху. Иначе — справа/слева.
+    el.classList.remove('tail-top', 'tail-bottom', 'tail-left', 'tail-right');
+    let top, left, tailKind;
+    const fitsBelow = (r.bottom + GAP + realH + MARGIN) < vh;
+    const fitsAbove = (r.top - GAP - realH - MARGIN) > 0;
+    if (fitsBelow) {
+      top = r.bottom + GAP;
+      tailKind = 'tail-top';
+    } else if (fitsAbove) {
+      top = r.top - realH - GAP;
+      tailKind = 'tail-bottom';
+    } else {
+      // Не помещается ни сверху, ни снизу — справа от цели.
+      top = Math.max(MARGIN, Math.min(vh - realH - MARGIN, r.top));
+      const fitsRight = (r.right + GAP + CLOUD_W + MARGIN) < vw;
+      if (fitsRight) {
+        left = r.right + GAP;
+        tailKind = 'tail-left';
+      } else {
+        left = Math.max(MARGIN, r.left - CLOUD_W - GAP);
+        tailKind = 'tail-right';
+      }
+      el.classList.add(tailKind);
+      el.style.top = top + 'px';
+      el.style.left = left + 'px';
+      // Хвостик на уровне центра цели по вертикали.
+      const tailY = (r.top + r.height / 2) - top;
+      el.style.setProperty('--tail-y', tailY + 'px');
+      return;
+    }
+    // Горизонтальная позиция: центруем по центру цели, не выходим за края.
+    left = r.left + r.width / 2 - CLOUD_W / 2;
+    left = Math.max(MARGIN, Math.min(vw - CLOUD_W - MARGIN, left));
+    el.classList.add(tailKind);
+    el.style.top = top + 'px';
+    el.style.left = left + 'px';
+    // Хвостик по горизонтали — указываем на центр цели.
+    const tailX = (r.left + r.width / 2) - left;
+    el.style.setProperty('--tail-x', tailX + 'px');
   }
 
   // Определяет kind ('manual'|'mechanized') по name из загруженного списка
@@ -1581,6 +1758,12 @@ class BrigadeAssistant {
   async resetDemo() {
     if (!confirm('Точно? Все твои записи удалятся, начнётся новая чистая сессия.')) return;
     try {
+      // Сбрасываем флаг «гайд просмотрен» и текущий шаг — новая сессия = снова
+      // показать подсказки клиенту с самого начала.
+      try {
+        localStorage.removeItem('demo_guide_done');
+        localStorage.removeItem('demo_guide_step');
+      } catch (e) {}
       await fetch('/api/demo/reset', { method: 'POST' });
       location.reload();
     } catch (e) {
