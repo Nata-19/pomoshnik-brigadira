@@ -985,6 +985,12 @@ class BrigadeAssistant {
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) { setMsg('❌ ' + (data.error || 'Ошибка')); return; }
+
+      const conflicts = data.conflicts || { sameDay: [], otherDay: [] };
+      if (conflicts.sameDay.length || conflicts.otherDay.length) {
+        await this.resolveRowConflicts(conflicts, employee, body);
+      }
+
       await this.loadTodayEntries(this.inputDate);
       this.selectedEmployeeId = null;
       this.renderInput();
@@ -995,6 +1001,173 @@ class BrigadeAssistant {
       const b = document.getElementById('i2-add-btn');
       if (b) { b.disabled = false; b.textContent = 'Добавить'; }
     }
+  }
+
+  // Последовательно проводит бригадира по конфликтным рядам.
+  async resolveRowConflicts(conflicts, employee, body) {
+    for (const c of conflicts.sameDay) {
+      await this.resolveSameDay(c, employee, body);
+    }
+    for (const c of conflicts.otherDay) {
+      await this.resolveOtherDay(c, employee, body);
+    }
+  }
+
+  // Тот же день: показываем модалку «поделить?» с полем кустов (для rows_bushes).
+  async resolveSameDay(c, employee, body) {
+    const res = await this.showConflictModal({
+      kind: 'sameDay',
+      row: c.row,
+      occupantName: c.occupant.employee,
+      employee,
+      askShare: body.measure_mode === 'rows_bushes',
+    });
+    if (!res) return;
+
+    const r = await this.apiFetch('/api/logs/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'split',
+        date: body.date, estate: body.estate, quarter: body.quarter, cell: body.cell,
+        work_type: body.work_type, measure_mode: body.measure_mode,
+        row: c.row, employee, firstLogId: c.occupant.logId, shareToSecond: res.shareToSecond,
+      }),
+    });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      await this.showInfoModal(`Ряд ${c.row}: ${data.error || 'не удалось разделить ряд'}`);
+    }
+  }
+
+  // Другой день: модалка-предупреждение «уже делал такой-то, дата». Записать на текущего?
+  async resolveOtherDay(c, employee, body) {
+    const res = await this.showConflictModal({
+      kind: 'otherDay',
+      row: c.row,
+      occupantName: c.occupant.employee,
+      occupantDate: c.occupant.date,
+      employee,
+      askShare: false,
+    });
+    if (!res) return;
+
+    const r = await this.apiFetch('/api/logs/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'assign',
+        date: body.date, estate: body.estate, quarter: body.quarter, cell: body.cell,
+        work_type: body.work_type, measure_mode: body.measure_mode,
+        row: c.row, employee,
+      }),
+    });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      await this.showInfoModal(`Ряд ${c.row}: ${data.error || 'не удалось записать ряд'}`);
+    }
+  }
+
+  // Внутристраничная модалка разрешения конфликта (работает в установленном PWA,
+  // в отличие от confirm()/prompt(), которые в standalone Android не показываются).
+  // Возвращает Promise: { action, shareToSecond } для подтверждения, либо null при отмене.
+  // Имена подставляются через textContent — без innerHTML, чтобы имя не сломало разметку.
+  showConflictModal({ kind, row, occupantName, occupantDate, employee, askShare }) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      const box = document.createElement('div');
+      box.className = 'modal-box';
+
+      const title = document.createElement('div');
+      title.className = 'modal-title';
+      title.textContent = `Ряд ${row}`;
+      box.appendChild(title);
+
+      const text = document.createElement('div');
+      text.className = 'modal-text';
+      if (kind === 'sameDay') {
+        text.textContent = `Сегодня этот ряд уже записан на ${occupantName}. Поделить ряд между ними?`;
+      } else {
+        text.textContent = `ℹ️ Ряд уже отмечал ${occupantName} (${occupantDate}). Всё равно записать на ${employee}?`;
+      }
+      box.appendChild(text);
+
+      let shareInput = null;
+      if (askShare) {
+        shareInput = document.createElement('input');
+        shareInput.className = 'modal-input';
+        shareInput.inputMode = 'numeric';
+        shareInput.placeholder = `Кусты для ${employee} (пусто = поровну)`;
+        box.appendChild(shareInput);
+      }
+
+      const actions = document.createElement('div');
+      actions.className = 'modal-actions';
+      const primary = document.createElement('button');
+      primary.className = 'modal-primary';
+      primary.textContent = kind === 'sameDay' ? 'Поделить' : `Записать на ${employee}`;
+      const cancel = document.createElement('button');
+      cancel.className = 'modal-cancel';
+      cancel.textContent = 'Отмена';
+      actions.appendChild(primary);
+      actions.appendChild(cancel);
+      box.appendChild(actions);
+
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+
+      const close = (result) => {
+        overlay.remove();
+        resolve(result);
+      };
+
+      primary.addEventListener('click', () => {
+        if (kind === 'sameDay') {
+          let shareToSecond = null;
+          if (shareInput && shareInput.value.trim() !== '') {
+            const n = parseInt(shareInput.value, 10);
+            if (Number.isInteger(n) && n >= 0) shareToSecond = n;
+          }
+          close({ action: 'split', shareToSecond });
+        } else {
+          close({ action: 'assign' });
+        }
+      });
+      cancel.addEventListener('click', () => close(null));
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+    });
+  }
+
+  // Простое информационное окно (например, ошибка разрешения конфликта).
+  // Тоже внутристраничное — чтобы работало в установленном PWA.
+  showInfoModal(message) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      const box = document.createElement('div');
+      box.className = 'modal-box';
+
+      const text = document.createElement('div');
+      text.className = 'modal-text';
+      text.textContent = `❌ ${message}`;
+      box.appendChild(text);
+
+      const actions = document.createElement('div');
+      actions.className = 'modal-actions';
+      const ok = document.createElement('button');
+      ok.className = 'modal-primary';
+      ok.textContent = 'Понятно';
+      actions.appendChild(ok);
+      box.appendChild(actions);
+
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+
+      const close = () => { overlay.remove(); resolve(); };
+      ok.addEventListener('click', close);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    });
   }
 
   async deleteEntry(id) {

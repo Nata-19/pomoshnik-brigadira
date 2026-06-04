@@ -5,6 +5,7 @@ const path = require('path');
 const { Pool } = require('pg');
 const fs = require('fs');
 const DataParser = require('./parser');
+const rowControl = require('./rowControl');
 const cookieParser = require('cookie-parser');
 const crypto = require('crypto');
 const auth = require('./auth');
@@ -932,6 +933,36 @@ app.delete('/api/attendance', authOrDemo, async (req, res) => {
   }
 });
 
+// Возвращает плоский список занятых рядов в разрезе хозяйство+квартал+клетка+вид работ.
+// ownerCol — внутреннее имя колонки владельца ('demo_session_id' или 'brigadier_id'),
+// не пользовательский ввод, поэтому подставляется в SQL напрямую.
+async function getOccupiedRows(ownerCol, ownerVal, estate, quarter, cell, workType) {
+  const r = await pool.query(
+    `SELECT id, date, employee, rows, measure_mode FROM work_logs
+     WHERE ${ownerCol} = $1 AND estate_id = $2 AND quarter = $3 AND cell = $4
+       AND work_type = $5 AND measure_mode IN ('rows_bushes', 'rows_only')`,
+    [ownerVal, estate, String(quarter), String(cell), workType]
+  );
+  const occ = [];
+  for (const rec of r.rows) {
+    const nums = String(rec.rows || '')
+      .split(',')
+      .map((s) => parseInt(s, 10))
+      .filter((n) => Number.isInteger(n));
+    for (const n of nums) {
+      occ.push({ row: n, date: rec.date, employee: rec.employee, logId: rec.id, measure_mode: rec.measure_mode });
+    }
+  }
+  return occ;
+}
+
+// Владелец записей в текущем режиме (демо — по сессии, прод — по бригадиру).
+function rowOwner(req) {
+  return DEMO_MODE
+    ? { col: 'demo_session_id', val: req.demo_session_id }
+    : { col: 'brigadier_id', val: req.brigadier.id };
+}
+
 // --- Этап 2: создание одной записи журнала (структурированный ввод) ---
 app.post('/api/logs', authOrDemo, async (req, res) => {
   try {
@@ -983,6 +1014,19 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
       } catch (e) {
         return res.status(400).json({ error: e.message });
       }
+
+      // Детект пересечений рядов в разрезе вида работ (по владельцу режима).
+      const owner = rowOwner(req);
+      const occupied = await getOccupiedRows(owner.col, owner.val, estate, String(quarter), String(cell), work_type.trim());
+      const cls = rowControl.classifyRows(rowNums, occupied, date);
+
+      // Все ряды заняты — ничего не сохраняем, отдаём конфликты на разрешение.
+      if (cls.free.length === 0 && (cls.sameDay.length || cls.otherDay.length)) {
+        return res.json({ success: false, savedRows: [], conflicts: { sameDay: cls.sameDay, otherDay: cls.otherDay } });
+      }
+
+      // Сохраняем только свободные ряды; конфликтные вернём клиенту.
+      rowNums = cls.free;
       rowsStr = rowNums.join(',');
       if (measure_mode === 'rows_bushes') {
         try {
@@ -991,6 +1035,7 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
           return res.status(400).json({ error: e.message });
         }
       }
+      req._rowConflicts = { sameDay: cls.sameDay, otherDay: cls.otherDay };
     }
 
     // Защита от непреднамеренных дублей: если ровно такая же запись была
@@ -1024,7 +1069,12 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
          employee.trim(), rowsStr, bushes, 0, req.demo_session_id,
          work_type.trim(), measure_mode, hoursVal]
       );
-      return res.json({ success: true, id: ins.rows[0].id });
+      return res.json({
+        success: true,
+        id: ins.rows[0].id,
+        savedRows: rowsStr ? rowsStr.split(',') : [],
+        conflicts: req._rowConflicts || { sameDay: [], otherDay: [] },
+      });
     }
 
     const dup = await pool.query(
@@ -1054,9 +1104,141 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
        employee.trim(), rowsStr, bushes, req.brigadier.id,
        work_type.trim(), measure_mode, hoursVal]
     );
-    res.json({ success: true, id: ins.rows[0].id });
+    res.json({
+      success: true,
+      id: ins.rows[0].id,
+      savedRows: rowsStr ? rowsStr.split(',') : [],
+      conflicts: req._rowConflicts || { sameDay: [], otherDay: [] },
+    });
   } catch (error) {
     console.error('Create log error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Разрешение конфликта рядов: деление «тот же день» и запись «другой день».
+// Демо-осознанно: владелец и парсер выбираются по DEMO_MODE, как в /api/logs.
+app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
+  try {
+    const { action, date, estate, quarter, cell, work_type, measure_mode, row, employee, firstLogId, shareToSecond } = req.body;
+
+    let invForParser, parserToUse;
+    if (DEMO_MODE) {
+      invForParser = await demo.getDemoInventory(pool, req.demo_session_id);
+      parserToUse = new DataParser(invForParser);
+    } else {
+      invForParser = inventory;
+      parserToUse = parser;
+    }
+
+    if (!estate || !invForParser.estates[estate]) {
+      return res.status(400).json({ error: 'Не выбрано хозяйство' });
+    }
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
+    }
+    if (!['rows_bushes', 'rows_only'].includes(measure_mode)) {
+      return res.status(400).json({ error: 'Режим должен быть с рядами' });
+    }
+    if (!quarter || !cell) {
+      return res.status(400).json({ error: 'Не указаны квартал и клетка' });
+    }
+    if (!work_type || !work_type.trim()) {
+      return res.status(400).json({ error: 'Не выбран вид работ' });
+    }
+    const rowNum = parseInt(row, 10);
+    if (!Number.isInteger(rowNum)) {
+      return res.status(400).json({ error: 'Неверный номер ряда' });
+    }
+    if (!employee || !employee.trim()) {
+      return res.status(400).json({ error: 'Не указан рабочий' });
+    }
+
+    // Кусты ряда из инвентаризации текущего режима (для rows_only — 0).
+    let rowBushes = 0;
+    if (measure_mode === 'rows_bushes') {
+      try {
+        rowBushes = parserToUse.getBushesCount(estate, String(quarter), String(cell), [rowNum]);
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+    }
+
+    const owner = rowOwner(req);
+
+    // Вставка одной записи журнала на ряд — с учётом режима (демо/прод).
+    const insertLog = async (emp, bushes) => {
+      if (DEMO_MODE) {
+        const ins = await pool.query(
+          `INSERT INTO work_logs
+            (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, demo_session_id, work_type, measure_mode, hours)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+          [date, estate, String(quarter), String(cell), emp, String(rowNum), bushes, 0, req.demo_session_id, work_type.trim(), measure_mode, null]
+        );
+        return ins.rows[0].id;
+      }
+      const ins = await pool.query(
+        `INSERT INTO work_logs
+          (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, work_type, measure_mode, hours)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+        [date, estate, String(quarter), String(cell), emp, String(rowNum), bushes, req.brigadier.id, work_type.trim(), measure_mode, null]
+      );
+      return ins.rows[0].id;
+    };
+
+    if (action === 'assign') {
+      // «Другой день»: записать ряд целиком на текущего рабочего, первого не трогаем.
+      const id = await insertLog(employee.trim(), rowBushes);
+      return res.json({ success: true, id });
+    }
+
+    if (action === 'split') {
+      // «Тот же день»: поделить кусты ряда между первым (firstLogId) и вторым (employee).
+      const fid = parseInt(firstLogId, 10);
+      if (!Number.isInteger(fid)) {
+        return res.status(400).json({ error: 'Не указана запись первого рабочего' });
+      }
+
+      // Запись первого рабочего должна принадлежать тому же владельцу и ровно
+      // этому разрезу (дата+хозяйство+квартал+клетка+вид работ).
+      const firstRec = await pool.query(
+        `SELECT employee FROM work_logs
+         WHERE id = $1 AND ${owner.col} = $2 AND date = $3 AND estate_id = $4
+           AND quarter = $5 AND cell = $6 AND work_type = $7`,
+        [fid, owner.val, date, estate, String(quarter), String(cell), work_type.trim()]
+      );
+      if (firstRec.rowCount === 0) {
+        return res.status(404).json({ error: 'Запись первого рабочего не найдена' });
+      }
+      // Делить ряд «сам с собой» нельзя — иначе у рабочего молча уполовинятся кусты.
+      if (firstRec.rows[0].employee === employee.trim()) {
+        return res.status(400).json({ error: 'Ряд уже записан на этого рабочего' });
+      }
+
+      const share = (shareToSecond === undefined || shareToSecond === null || shareToSecond === '')
+        ? null : parseInt(shareToSecond, 10);
+
+      let parts = { first: 0, second: 0 };
+      if (measure_mode === 'rows_bushes') {
+        try {
+          parts = rowControl.splitBushes(rowBushes, share);
+        } catch (e) {
+          return res.status(400).json({ error: e.message });
+        }
+        // Уменьшаем кусты первого на долю второго (ряд остаётся в его записи).
+        await pool.query(
+          `UPDATE work_logs SET bushes = GREATEST(bushes - $1, 0)
+           WHERE id = $2 AND ${owner.col} = $3`,
+          [parts.second, fid, owner.val]
+        );
+      }
+      const id = await insertLog(employee.trim(), parts.second);
+      return res.json({ success: true, id });
+    }
+
+    return res.status(400).json({ error: 'Неизвестное действие' });
+  } catch (error) {
+    console.error('Resolve error:', error);
     res.status(500).json({ error: error.message });
   }
 });

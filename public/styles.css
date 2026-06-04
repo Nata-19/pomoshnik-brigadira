@@ -774,3 +774,73 @@ button:active {
   word-break: break-word;
 }
 .demo-reset-btn:hover { background: #4a8fc2; }
+
+/* Модалка разрешения конфликта рядов (работает в установленном PWA) */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 16px;
+}
+
+.modal-box {
+    background: #fff;
+    border-radius: 12px;
+    padding: 20px;
+    max-width: 360px;
+    width: 100%;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+}
+
+.modal-title {
+    font-size: 18px;
+    font-weight: bold;
+    color: #2c3e50;
+    margin-bottom: 8px;
+}
+
+.modal-text {
+    font-size: 15px;
+    color: #333;
+    line-height: 1.4;
+    margin-bottom: 14px;
+}
+
+.modal-input {
+    width: 100%;
+    box-sizing: border-box;
+    font-size: 15px;
+    padding: 10px;
+    margin-bottom: 14px;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
+.modal-actions button {
+    padding: 10px 16px;
+    font-size: 14px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.modal-primary {
+    background: #2c3e50;
+    color: #fff;
+}
+
+.modal-cancel {
+    background: #e2e2e2;
+    color: #333;
+}
