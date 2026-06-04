@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server/server.js",
     "dev": "node server/server.js",
-    "build": "echo 'Build script'"
+    "build": "echo 'Build script'",
+    "test": "node --test"
   },
   "keywords": [
     "vineyard",
