@@ -5,6 +5,7 @@ const path = require('path');
 const { Pool } = require('pg');
 const fs = require('fs');
 const DataParser = require('./parser');
+const rowControl = require('./rowControl');
 const cookieParser = require('cookie-parser');
 const crypto = require('crypto');
 const auth = require('./auth');
@@ -932,6 +933,36 @@ app.delete('/api/attendance', authOrDemo, async (req, res) => {
   }
 });
 
+// Возвращает плоский список занятых рядов в разрезе хозяйство+квартал+клетка+вид работ.
+// ownerCol — внутреннее имя колонки владельца ('demo_session_id' или 'brigadier_id'),
+// не пользовательский ввод, поэтому подставляется в SQL напрямую.
+async function getOccupiedRows(ownerCol, ownerVal, estate, quarter, cell, workType) {
+  const r = await pool.query(
+    `SELECT id, date, employee, rows, measure_mode FROM work_logs
+     WHERE ${ownerCol} = $1 AND estate_id = $2 AND quarter = $3 AND cell = $4
+       AND work_type = $5 AND measure_mode IN ('rows_bushes', 'rows_only')`,
+    [ownerVal, estate, String(quarter), String(cell), workType]
+  );
+  const occ = [];
+  for (const rec of r.rows) {
+    const nums = String(rec.rows || '')
+      .split(',')
+      .map((s) => parseInt(s, 10))
+      .filter((n) => Number.isInteger(n));
+    for (const n of nums) {
+      occ.push({ row: n, date: rec.date, employee: rec.employee, logId: rec.id, measure_mode: rec.measure_mode });
+    }
+  }
+  return occ;
+}
+
+// Владелец записей в текущем режиме (демо — по сессии, прод — по бригадиру).
+function rowOwner(req) {
+  return DEMO_MODE
+    ? { col: 'demo_session_id', val: req.demo_session_id }
+    : { col: 'brigadier_id', val: req.brigadier.id };
+}
+
 // --- Этап 2: создание одной записи журнала (структурированный ввод) ---
 app.post('/api/logs', authOrDemo, async (req, res) => {
   try {
@@ -983,6 +1014,19 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
       } catch (e) {
         return res.status(400).json({ error: e.message });
       }
+
+      // Детект пересечений рядов в разрезе вида работ (по владельцу режима).
+      const owner = rowOwner(req);
+      const occupied = await getOccupiedRows(owner.col, owner.val, estate, String(quarter), String(cell), work_type.trim());
+      const cls = rowControl.classifyRows(rowNums, occupied, date);
+
+      // Все ряды заняты — ничего не сохраняем, отдаём конфликты на разрешение.
+      if (cls.free.length === 0 && (cls.sameDay.length || cls.otherDay.length)) {
+        return res.json({ success: false, savedRows: [], conflicts: { sameDay: cls.sameDay, otherDay: cls.otherDay } });
+      }
+
+      // Сохраняем только свободные ряды; конфликтные вернём клиенту.
+      rowNums = cls.free;
       rowsStr = rowNums.join(',');
       if (measure_mode === 'rows_bushes') {
         try {
@@ -991,6 +1035,7 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
           return res.status(400).json({ error: e.message });
         }
       }
+      req._rowConflicts = { sameDay: cls.sameDay, otherDay: cls.otherDay };
     }
 
     // Защита от непреднамеренных дублей: если ровно такая же запись была
@@ -1024,7 +1069,12 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
          employee.trim(), rowsStr, bushes, 0, req.demo_session_id,
          work_type.trim(), measure_mode, hoursVal]
       );
-      return res.json({ success: true, id: ins.rows[0].id });
+      return res.json({
+        success: true,
+        id: ins.rows[0].id,
+        savedRows: rowsStr ? rowsStr.split(',') : [],
+        conflicts: req._rowConflicts || { sameDay: [], otherDay: [] },
+      });
     }
 
     const dup = await pool.query(
@@ -1054,7 +1104,12 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
        employee.trim(), rowsStr, bushes, req.brigadier.id,
        work_type.trim(), measure_mode, hoursVal]
     );
-    res.json({ success: true, id: ins.rows[0].id });
+    res.json({
+      success: true,
+      id: ins.rows[0].id,
+      savedRows: rowsStr ? rowsStr.split(',') : [],
+      conflicts: req._rowConflicts || { sameDay: [], otherDay: [] },
+    });
   } catch (error) {
     console.error('Create log error:', error);
     res.status(500).json({ error: error.message });
