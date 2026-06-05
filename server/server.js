@@ -1041,6 +1041,7 @@ async function applyRowRemoval(ownerCol, ownerVal, logId, rowNum, removedRowBush
   const out = rowControl.removeRowFromRecord(
     rec.rows[0].rows, rec.rows[0].bushes, rowNum, removedRowBushes
   );
+  if (!out.found) return false;
   if (out.deleted) {
     await pool.query(
       `DELETE FROM work_logs WHERE id = $1 AND ${ownerCol} = $2`,
@@ -1368,18 +1369,24 @@ app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
         if (firstRec.rows[0].employee === employee.trim()) {
           return res.status(400).json({ error: 'Ряд уже записан на этого рабочего' });
         }
-        await applyRowRemoval(owner.col, owner.val, fid, rowNum, rowBushes);
+        const removed = await applyRowRemoval(owner.col, owner.val, fid, rowNum, rowBushes);
+        if (!removed) {
+          return res.status(409).json({ error: 'Ряд уже снят с первого рабочего' });
+        }
         const id = await insertLog(employee.trim(), rowBushes);
         return res.json({ success: true, id });
       }
 
-      // postpone: ряд уходит в «Спорные», снимается с первого, второму не пишется.
+      // postpone: снимаем ряд с первого; если снять нечего — 409; иначе в «Спорные».
+      const removed = await applyRowRemoval(owner.col, owner.val, fid, rowNum, rowBushes);
+      if (!removed) {
+        return res.status(409).json({ error: 'Ряд уже снят с первого рабочего' });
+      }
       await insertDisputed({
         estate, quarter: String(quarter), cell: String(cell),
         work_type: work_type.trim(), row_num: rowNum, measure_mode,
         claimed_by: firstRec.rows[0].employee, claimed_date: firstRec.rows[0].date,
       }, owner, req);
-      await applyRowRemoval(owner.col, owner.val, fid, rowNum, rowBushes);
       return res.json({ success: true });
     }
 
