@@ -209,6 +209,17 @@ const getSecret = () => SESSION_SECRET;
     await pool.query(`ALTER TABLE work_types ADD COLUMN IF NOT EXISTS default_measure_mode TEXT NOT NULL DEFAULT 'rows_bushes'`);
     await pool.query(`ALTER TABLE attendance ADD COLUMN IF NOT EXISTS demo_session_id TEXT REFERENCES demo_sessions(id) ON DELETE CASCADE`);
     await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS demo_session_id TEXT REFERENCES demo_sessions(id) ON DELETE CASCADE`);
+    // disputed_rows.demo_session_id создаётся без FK в общем CREATE (в боевом demo_sessions нет).
+    // В демо навешиваем каскад отдельно и идемпотентно — чтобы спорные чистились вместе с сессией.
+    await pool.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'disputed_rows_demo_session_fk') THEN
+          ALTER TABLE disputed_rows
+            ADD CONSTRAINT disputed_rows_demo_session_fk
+            FOREIGN KEY (demo_session_id) REFERENCES demo_sessions(id) ON DELETE CASCADE;
+        END IF;
+      END $$;
+    `);
 
     // Инвентарь демо — в БД, не в JSON-файле, чтобы каждая сессия имела свой.
     await pool.query(`
