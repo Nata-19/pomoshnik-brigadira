@@ -1640,22 +1640,22 @@ class BrigadeAssistant {
 
   // Тот же день: показываем модалку «поделить?» с полем кустов (для rows_bushes).
   async resolveSameDay(c, employee, body) {
-    const res = await this.showConflictModal({
+    // Тот же день: делим ряд между рабочими (предотмечены занявший и текущий).
+    const assignments = await this.showDivideModal({
       row: c.row,
-      occupantName: c.occupant.employee,
-      employee,
       askShare: body.measure_mode === 'rows_bushes',
+      preselect: [c.occupant.employee, employee],
     });
-    if (!res) return;
+    if (!assignments) return;
 
     const r = await this.apiFetch('/api/logs/resolve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        action: 'split',
+        action: 'divide',
         date: body.date, estate: body.estate, quarter: body.quarter, cell: body.cell,
         work_type: body.work_type, measure_mode: body.measure_mode,
-        row: c.row, employee, firstLogId: c.occupant.logId, shareToSecond: res.shareToSecond,
+        row: c.row, employee, firstLogId: c.occupant.logId, assignments,
       }),
     });
     if (!r.ok) {
@@ -1664,15 +1664,13 @@ class BrigadeAssistant {
     }
   }
 
-  // Другой день: модалка-предупреждение «уже делал такой-то, дата». Записать на текущего?
-  // Другой день: широкое меню — отменить / отложить в спорные / переписать / поделить.
+  // Другой день: широкое меню — переписать / поделить / отложить в спорные / отменить.
   async resolveOtherDay(c, employee, body) {
     const res = await this.showOtherDayMenu({
       row: c.row,
       occupantName: c.occupant.employee,
       occupantDate: c.occupant.date,
       employee,
-      askShare: body.measure_mode === 'rows_bushes',
     });
     if (!res || res.action === 'cancel') return;
 
@@ -1681,10 +1679,21 @@ class BrigadeAssistant {
       work_type: body.work_type, measure_mode: body.measure_mode,
       row: c.row, employee, firstLogId: c.occupant.logId,
     };
-    if (res.action === 'split') payload.action = 'split';
-    else if (res.action === 'reassign') payload.action = 'reassign';
-    else if (res.action === 'postpone') payload.action = 'postpone';
-    if (res.action === 'split') payload.shareToSecond = res.shareToSecond;
+    if (res.action === 'divide') {
+      // Открываем окно деления: кто делал ряд + доли (предотмечены занявший и текущий).
+      const assignments = await this.showDivideModal({
+        row: c.row,
+        askShare: body.measure_mode === 'rows_bushes',
+        preselect: [c.occupant.employee, employee],
+      });
+      if (!assignments) return;
+      payload.action = 'divide';
+      payload.assignments = assignments;
+    } else if (res.action === 'reassign') {
+      payload.action = 'reassign';
+    } else if (res.action === 'postpone') {
+      payload.action = 'postpone';
+    }
 
     const r = await this.apiFetch('/api/logs/resolve', {
       method: 'POST',
@@ -1698,9 +1707,8 @@ class BrigadeAssistant {
   }
 
   // Модалка «разные дни»: 4 действия. Возвращает Promise с одним из:
-  // { action: 'cancel' } | { action: 'postpone' } | { action: 'reassign' } |
-  // { action: 'split', shareToSecond } ; либо null при закрытии по фону.
-  showOtherDayMenu({ row, occupantName, occupantDate, employee, askShare }) {
+  // { action: 'cancel' | 'postpone' | 'reassign' | 'divide' }; либо null при закрытии по фону.
+  showOtherDayMenu({ row, occupantName, occupantDate, employee }) {
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
@@ -1717,15 +1725,6 @@ class BrigadeAssistant {
       text.textContent = `Этот ряд уже отмечал ${occupantName} (${occupantDate}). Что делаем?`;
       box.appendChild(text);
 
-      let shareInput = null;
-      if (askShare) {
-        shareInput = document.createElement('input');
-        shareInput.className = 'modal-input';
-        shareInput.inputMode = 'numeric';
-        shareInput.placeholder = `Кусты для ${employee} при делении (пусто = поровну)`;
-        box.appendChild(shareInput);
-      }
-
       const actions = document.createElement('div');
       actions.className = 'modal-actions modal-actions-col';
 
@@ -1740,83 +1739,13 @@ class BrigadeAssistant {
       const close = (result) => { overlay.remove(); resolve(result); };
 
       mkBtn(`Переписать на ${employee}`, 'modal-primary', () => close({ action: 'reassign' }));
-      mkBtn('Поделить кусты', 'modal-secondary', () => {
-        let shareToSecond = null;
-        if (shareInput && shareInput.value.trim() !== '') {
-          const n = parseInt(shareInput.value, 10);
-          if (Number.isInteger(n) && n >= 0) shareToSecond = n;
-        }
-        close({ action: 'split', shareToSecond });
-      });
+      mkBtn('Поделить кусты', 'modal-secondary', () => close({ action: 'divide' }));
       mkBtn('Отложить в «Спорные»', 'modal-secondary', () => close({ action: 'postpone' }));
       mkBtn('Отменить запись', 'modal-cancel', () => close({ action: 'cancel' }));
 
       box.appendChild(actions);
       overlay.appendChild(box);
       document.body.appendChild(overlay);
-      overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
-    });
-  }
-
-  // Внутристраничная модалка разрешения конфликта (работает в установленном PWA,
-  // в отличие от confirm()/prompt(), которые в standalone Android не показываются).
-  // Возвращает Promise: { action, shareToSecond } для подтверждения, либо null при отмене.
-  // Имена подставляются через textContent — без innerHTML, чтобы имя не сломало разметку.
-  showConflictModal({ row, occupantName, employee, askShare }) {
-    return new Promise((resolve) => {
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
-      const box = document.createElement('div');
-      box.className = 'modal-box';
-
-      const title = document.createElement('div');
-      title.className = 'modal-title';
-      title.textContent = `Ряд ${row}`;
-      box.appendChild(title);
-
-      const text = document.createElement('div');
-      text.className = 'modal-text';
-      text.textContent = `Сегодня этот ряд уже записан на ${occupantName}. Поделить ряд между ними?`;
-      box.appendChild(text);
-
-      let shareInput = null;
-      if (askShare) {
-        shareInput = document.createElement('input');
-        shareInput.className = 'modal-input';
-        shareInput.inputMode = 'numeric';
-        shareInput.placeholder = `Кусты для ${employee} (пусто = поровну)`;
-        box.appendChild(shareInput);
-      }
-
-      const actions = document.createElement('div');
-      actions.className = 'modal-actions';
-      const primary = document.createElement('button');
-      primary.className = 'modal-primary';
-      primary.textContent = 'Поделить';
-      const cancel = document.createElement('button');
-      cancel.className = 'modal-cancel';
-      cancel.textContent = 'Отмена';
-      actions.appendChild(primary);
-      actions.appendChild(cancel);
-      box.appendChild(actions);
-
-      overlay.appendChild(box);
-      document.body.appendChild(overlay);
-
-      const close = (result) => {
-        overlay.remove();
-        resolve(result);
-      };
-
-      primary.addEventListener('click', () => {
-        let shareToSecond = null;
-        if (shareInput && shareInput.value.trim() !== '') {
-          const n = parseInt(shareInput.value, 10);
-          if (Number.isInteger(n) && n >= 0) shareToSecond = n;
-        }
-        close({ action: 'split', shareToSecond });
-      });
-      cancel.addEventListener('click', () => close(null));
       overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
     });
   }
@@ -1972,20 +1901,25 @@ class BrigadeAssistant {
   async openDisputedAssign(id) {
     const d = (this.disputed || []).find((x) => x.id === id);
     if (!d) return;
-    const assignments = await this.showDisputedAssignModal(d);
+    const assignments = await this.showDivideModal({
+      row: d.row_num,
+      askShare: d.measure_mode === 'rows_bushes',
+      preselect: [],
+    });
     if (!assignments) return;
     await this.resolveDisputed(id, 'assign-actual', assignments);
   }
 
+  // Окно деления ряда между рабочими: чекбоксы + доли кустов (пусто = поровну).
+  // preselect — имена, отмеченные заранее (занявший ряд и текущий рабочий).
   // Возвращает Promise: массив [{employee, bushes|null}] (≥1) или null при отмене.
-  showDisputedAssignModal(d) {
+  showDivideModal({ row, askShare, preselect = [] }) {
     return new Promise((resolve) => {
       if (!this.employees || this.employees.length === 0) {
         this.showInfoModal('Список рабочих не загружен');
         resolve(null);
         return;
       }
-      const askShare = d.measure_mode === 'rows_bushes';
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
       const box = document.createElement('div');
@@ -1993,7 +1927,7 @@ class BrigadeAssistant {
 
       const title = document.createElement('div');
       title.className = 'modal-title';
-      title.textContent = `Ряд ${d.row_num} — кто делал?`;
+      title.textContent = `Ряд ${row} — кто делал?`;
       box.appendChild(title);
 
       const hint = document.createElement('div');
@@ -2012,6 +1946,7 @@ class BrigadeAssistant {
         rowEl.style.margin = '6px 0';
         const cb = document.createElement('input');
         cb.type = 'checkbox';
+        if (preselect.includes(e.name)) cb.checked = true;
         const nameSpan = document.createElement('span');
         nameSpan.textContent = e.name;
         nameSpan.style.flex = '1';
