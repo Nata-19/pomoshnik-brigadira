@@ -1347,6 +1347,151 @@ app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
   }
 });
 
+// Список спорных рядов владельца по хозяйству.
+app.get('/api/disputed', authOrDemo, async (req, res) => {
+  try {
+    const { estate } = req.query;
+    if (!estate) return res.status(400).json({ error: 'Укажи estate' });
+    let result;
+    if (DEMO_MODE) {
+      result = await pool.query(
+        `SELECT id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date
+         FROM disputed_rows WHERE demo_session_id = $1 AND estate_id = $2
+         ORDER BY created_at DESC`,
+        [req.demo_session_id, estate]
+      );
+    } else {
+      result = await pool.query(
+        `SELECT id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date
+         FROM disputed_rows WHERE brigadier_id = $1 AND estate_id = $2
+         ORDER BY created_at DESC`,
+        [req.brigadier.id, estate]
+      );
+    }
+    res.json({ disputed: result.rows });
+  } catch (error) {
+    console.error('Disputed list error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Разбор спорного ряда:
+//   'assign-actual' — записать тем, кто реально делал: один или несколько рабочих,
+//      кусты ряда делятся (assignments: [{employee, bushes?}], пустые доли — поровну);
+//   'return-first'  — вернуть заявителю (одна запись с полными кустами ряда).
+// Все записи создаются на дату claimed_date; ряд считается одним. После — ряд
+// убирается из спорных.
+app.post('/api/disputed/:id/resolve', authOrDemo, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'Некорректный id' });
+    }
+    const { action, assignments } = req.body;
+    if (!['assign-actual', 'return-first'].includes(action)) {
+      return res.status(400).json({ error: 'Неизвестное действие' });
+    }
+
+    const owner = rowOwner(req);
+    const rec = await pool.query(
+      `SELECT * FROM disputed_rows WHERE id = $1 AND ${owner.col} = $2`,
+      [id, owner.val]
+    );
+    if (rec.rowCount === 0) {
+      return res.status(404).json({ error: 'Спорный ряд не найден' });
+    }
+    const d = rec.rows[0];
+
+    // Кусты ряда из инвентаризации текущего режима (для rows_only = 0).
+    let invForParser, parserToUse;
+    if (DEMO_MODE) {
+      invForParser = await demo.getDemoInventory(pool, req.demo_session_id);
+      parserToUse = new DataParser(invForParser);
+    } else {
+      invForParser = inventory;
+      parserToUse = parser;
+    }
+    let rowBushes = 0;
+    if (d.measure_mode === 'rows_bushes') {
+      try {
+        rowBushes = parserToUse.getBushesCount(d.estate_id, String(d.quarter), String(d.cell), [d.row_num]);
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+    }
+
+    // Формируем список (рабочий, кусты) для вставки.
+    let toInsert = [];
+    if (action === 'return-first') {
+      toInsert = [{ employee: d.claimed_by, bushes: rowBushes }];
+    } else {
+      const list = Array.isArray(assignments) ? assignments : [];
+      const cleaned = list
+        .map((a) => ({
+          employee: a && a.employee ? String(a.employee).trim() : '',
+          bushes: (a && a.bushes !== null && a.bushes !== undefined && a.bushes !== '')
+            ? parseInt(a.bushes, 10) : null,
+        }))
+        .filter((a) => a.employee);
+      if (cleaned.length === 0) {
+        return res.status(400).json({ error: 'Выбери хотя бы одного рабочего' });
+      }
+      if (d.measure_mode !== 'rows_bushes') {
+        toInsert = cleaned.map((a) => ({ employee: a.employee, bushes: 0 }));
+      } else {
+        for (const a of cleaned) {
+          if (a.bushes !== null && (!Number.isInteger(a.bushes) || a.bushes < 0)) {
+            return res.status(400).json({ error: 'Кусты должны быть неотрицательным числом' });
+          }
+        }
+        // Явные доли уважаем, остаток раздаём поровну по пустым.
+        const explicitSum = cleaned.reduce((s, a) => s + (a.bushes !== null ? a.bushes : 0), 0);
+        const blanksCount = cleaned.filter((a) => a.bushes === null).length;
+        const remaining = Math.max(rowBushes - explicitSum, 0);
+        const shares = rowControl.distributeBushes(remaining, blanksCount);
+        let bi = 0;
+        toInsert = cleaned.map((a) => ({
+          employee: a.employee,
+          bushes: a.bushes !== null ? a.bushes : shares[bi++],
+        }));
+      }
+    }
+
+    // Вставка записей журнала (демо/прод) — одна на каждого рабочего.
+    const insertOne = async (emp, bushes) => {
+      if (DEMO_MODE) {
+        await pool.query(
+          `INSERT INTO work_logs
+            (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, demo_session_id, work_type, measure_mode, hours)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+          [d.claimed_date, d.estate_id, String(d.quarter), String(d.cell), emp,
+           String(d.row_num), bushes, 0, req.demo_session_id, d.work_type, d.measure_mode, null]
+        );
+      } else {
+        await pool.query(
+          `INSERT INTO work_logs
+            (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, work_type, measure_mode, hours)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          [d.claimed_date, d.estate_id, String(d.quarter), String(d.cell), emp,
+           String(d.row_num), bushes, req.brigadier.id, d.work_type, d.measure_mode, null]
+        );
+      }
+    };
+    for (const a of toInsert) {
+      await insertOne(a.employee, a.bushes);
+    }
+
+    await pool.query(
+      `DELETE FROM disputed_rows WHERE id = $1 AND ${owner.col} = $2`,
+      [id, owner.val]
+    );
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Disputed resolve error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Health-check для UptimeRobot и Render
 app.get('/health', (req, res) => res.json({ ok: true }));
 
