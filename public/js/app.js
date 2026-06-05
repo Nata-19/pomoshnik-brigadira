@@ -1375,7 +1375,8 @@ class BrigadeAssistant {
   }
 
   async resolveDisputed(id, action, assignments) {
-    const body = { action };
+    // Разобранный ряд ложится на сегодня (день, когда бригадир разобрался).
+    const body = { action, date: this.getTodayDate() };
     if (action === 'assign-actual') body.assignments = assignments || [];
     try {
       const r = await this.apiFetch('/api/disputed/' + id + '/resolve', {
