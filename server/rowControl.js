@@ -45,4 +45,49 @@ function classifyRows(requestedRows, occupied, today) {
   return { free, sameDay, otherDay };
 }
 
-module.exports = { splitBushes, classifyRows };
+// Убирает ряд removedRow из CSV-списка рядов записи и пересчитывает кусты.
+// rowsCsv — строка вида '1,2,3'; currentBushes — текущие кусты записи;
+// removedRowBushes — кусты снимаемого ряда по инвентаризации (для rows_only = 0).
+// Возвращает { rows, bushes, deleted, found }:
+//   found=false  → ряда в записи не было, ничего не меняем;
+//   deleted=true → рядов не осталось, запись надо удалить (rows=null, bushes=0);
+//   иначе        → rows = новый CSV, bushes = max(currentBushes - removedRowBushes, 0).
+// Кусты вычитаем (а не пересчитываем по инвентаризации), чтобы сохранить ранее
+// заданные вручную доли — так же, как делает деление (split).
+function removeRowFromRecord(rowsCsv, currentBushes, removedRow, removedRowBushes) {
+  const nums = String(rowsCsv || '')
+    .split(',')
+    .map((s) => parseInt(s, 10))
+    .filter((n) => Number.isInteger(n));
+  if (!nums.includes(removedRow)) {
+    return { rows: nums.join(','), bushes: currentBushes, deleted: false, found: false };
+  }
+  const remaining = nums.filter((n) => n !== removedRow);
+  if (remaining.length === 0) {
+    return { rows: null, bushes: 0, deleted: true, found: true };
+  }
+  return {
+    rows: remaining.join(','),
+    bushes: Math.max(currentBushes - removedRowBushes, 0),
+    deleted: false,
+    found: true,
+  };
+}
+
+// Делит total кустов на n равных долей; остаток раздаётся первым долям по одной.
+// distributeBushes(101, 2) → [51, 50]; distributeBushes(100, 3) → [34, 33, 33].
+// n <= 0 → пустой массив.
+function distributeBushes(total, n) {
+  if (!Number.isInteger(n) || n <= 0) return [];
+  if (!Number.isInteger(total) || total < 0) return [];
+  const base = Math.floor(total / n);
+  let rem = total - base * n;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    out.push(base + (rem > 0 ? 1 : 0));
+    if (rem > 0) rem--;
+  }
+  return out;
+}
+
+module.exports = { splitBushes, classifyRows, removeRowFromRecord, distributeBushes };

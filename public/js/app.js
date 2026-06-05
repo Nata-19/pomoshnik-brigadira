@@ -411,6 +411,7 @@ class BrigadeAssistant {
           <button class="tab-button active" onclick="app.switchTab(event, 'input')">Ввод данных</button>
           <button class="tab-button" onclick="app.switchTab(event, 'report')">Отчет за период</button>
           <button class="tab-button" onclick="app.switchTab(event, 'logs'); app.loadLogs()">Журнал</button>
+          <button class="tab-button" onclick="app.switchTab(event, 'disputed'); app.loadDisputed()">Спорные</button>
           ${this.me && this.me.is_admin ? `<button class="tab-button" onclick="app.switchTab(event, 'admin'); app.loadBrigadiers()">Админ</button>` : ''}
         </div>
 
@@ -441,6 +442,11 @@ class BrigadeAssistant {
           <button onclick="app.loadLogs()">Обновить</button>
 
           <div id="logs-list" class="logs-list"></div>
+        </div>
+
+        <div class="tab-content" id="disputed-tab">
+          <button onclick="app.loadDisputed()">Обновить</button>
+          <div id="disputed-list" class="logs-list"></div>
         </div>
 
         ${this.me && this.me.is_admin ? `
@@ -1015,23 +1021,22 @@ class BrigadeAssistant {
 
   // Тот же день: показываем модалку «поделить?» с полем кустов (для rows_bushes).
   async resolveSameDay(c, employee, body) {
-    const res = await this.showConflictModal({
-      kind: 'sameDay',
+    // Тот же день: делим ряд между рабочими (предотмечены занявший и текущий).
+    const assignments = await this.showDivideModal({
       row: c.row,
-      occupantName: c.occupant.employee,
-      employee,
       askShare: body.measure_mode === 'rows_bushes',
+      preselect: [c.occupant.employee, employee],
     });
-    if (!res) return;
+    if (!assignments) return;
 
     const r = await this.apiFetch('/api/logs/resolve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        action: 'split',
+        action: 'divide',
         date: body.date, estate: body.estate, quarter: body.quarter, cell: body.cell,
         work_type: body.work_type, measure_mode: body.measure_mode,
-        row: c.row, employee, firstLogId: c.occupant.logId, shareToSecond: res.shareToSecond,
+        row: c.row, employee, firstLogId: c.occupant.logId, assignments,
       }),
     });
     if (!r.ok) {
@@ -1040,39 +1045,51 @@ class BrigadeAssistant {
     }
   }
 
-  // Другой день: модалка-предупреждение «уже делал такой-то, дата». Записать на текущего?
+  // Другой день: широкое меню — переписать / поделить / отложить в спорные / отменить.
   async resolveOtherDay(c, employee, body) {
-    const res = await this.showConflictModal({
-      kind: 'otherDay',
+    const res = await this.showOtherDayMenu({
       row: c.row,
       occupantName: c.occupant.employee,
       occupantDate: c.occupant.date,
       employee,
-      askShare: false,
     });
-    if (!res) return;
+    if (!res || res.action === 'cancel') return;
+
+    const payload = {
+      date: body.date, estate: body.estate, quarter: body.quarter, cell: body.cell,
+      work_type: body.work_type, measure_mode: body.measure_mode,
+      row: c.row, employee, firstLogId: c.occupant.logId,
+    };
+    if (res.action === 'divide') {
+      // Открываем окно деления: кто делал ряд + доли (предотмечены занявший и текущий).
+      const assignments = await this.showDivideModal({
+        row: c.row,
+        askShare: body.measure_mode === 'rows_bushes',
+        preselect: [c.occupant.employee, employee],
+      });
+      if (!assignments) return;
+      payload.action = 'divide';
+      payload.assignments = assignments;
+    } else if (res.action === 'reassign') {
+      payload.action = 'reassign';
+    } else if (res.action === 'postpone') {
+      payload.action = 'postpone';
+    }
 
     const r = await this.apiFetch('/api/logs/resolve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'assign',
-        date: body.date, estate: body.estate, quarter: body.quarter, cell: body.cell,
-        work_type: body.work_type, measure_mode: body.measure_mode,
-        row: c.row, employee,
-      }),
+      body: JSON.stringify(payload),
     });
     if (!r.ok) {
       const data = await r.json().catch(() => ({}));
-      await this.showInfoModal(`Ряд ${c.row}: ${data.error || 'не удалось записать ряд'}`);
+      await this.showInfoModal(`Ряд ${c.row}: ${data.error || 'не удалось обработать ряд'}`);
     }
   }
 
-  // Внутристраничная модалка разрешения конфликта (работает в установленном PWA,
-  // в отличие от confirm()/prompt(), которые в standalone Android не показываются).
-  // Возвращает Promise: { action, shareToSecond } для подтверждения, либо null при отмене.
-  // Имена подставляются через textContent — без innerHTML, чтобы имя не сломало разметку.
-  showConflictModal({ kind, row, occupantName, occupantDate, employee, askShare }) {
+  // Модалка «разные дни»: 4 действия. Возвращает Promise с одним из:
+  // { action: 'cancel' | 'postpone' | 'reassign' | 'divide' }; либо null при закрытии по фону.
+  showOtherDayMenu({ row, occupantName, occupantDate, employee }) {
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
@@ -1086,55 +1103,30 @@ class BrigadeAssistant {
 
       const text = document.createElement('div');
       text.className = 'modal-text';
-      if (kind === 'sameDay') {
-        text.textContent = `Сегодня этот ряд уже записан на ${occupantName}. Поделить ряд между ними?`;
-      } else {
-        text.textContent = `ℹ️ Ряд уже отмечал ${occupantName} (${occupantDate}). Всё равно записать на ${employee}?`;
-      }
+      text.textContent = `Этот ряд уже отмечал ${occupantName} (${occupantDate}). Что делаем?`;
       box.appendChild(text);
 
-      let shareInput = null;
-      if (askShare) {
-        shareInput = document.createElement('input');
-        shareInput.className = 'modal-input';
-        shareInput.inputMode = 'numeric';
-        shareInput.placeholder = `Кусты для ${employee} (пусто = поровну)`;
-        box.appendChild(shareInput);
-      }
-
       const actions = document.createElement('div');
-      actions.className = 'modal-actions';
-      const primary = document.createElement('button');
-      primary.className = 'modal-primary';
-      primary.textContent = kind === 'sameDay' ? 'Поделить' : `Записать на ${employee}`;
-      const cancel = document.createElement('button');
-      cancel.className = 'modal-cancel';
-      cancel.textContent = 'Отмена';
-      actions.appendChild(primary);
-      actions.appendChild(cancel);
-      box.appendChild(actions);
+      actions.className = 'modal-actions modal-actions-col';
 
-      overlay.appendChild(box);
-      document.body.appendChild(overlay);
-
-      const close = (result) => {
-        overlay.remove();
-        resolve(result);
+      const mkBtn = (label, cls, onClick) => {
+        const b = document.createElement('button');
+        b.className = cls;
+        b.textContent = label;
+        b.addEventListener('click', onClick);
+        actions.appendChild(b);
       };
 
-      primary.addEventListener('click', () => {
-        if (kind === 'sameDay') {
-          let shareToSecond = null;
-          if (shareInput && shareInput.value.trim() !== '') {
-            const n = parseInt(shareInput.value, 10);
-            if (Number.isInteger(n) && n >= 0) shareToSecond = n;
-          }
-          close({ action: 'split', shareToSecond });
-        } else {
-          close({ action: 'assign' });
-        }
-      });
-      cancel.addEventListener('click', () => close(null));
+      const close = (result) => { overlay.remove(); resolve(result); };
+
+      mkBtn(`Переписать на ${employee}`, 'modal-primary', () => close({ action: 'reassign' }));
+      mkBtn('Поделить кусты', 'modal-secondary', () => close({ action: 'divide' }));
+      mkBtn('Отложить в «Спорные»', 'modal-secondary', () => close({ action: 'postpone' }));
+      mkBtn('Отменить запись', 'modal-cancel', () => close({ action: 'cancel' }));
+
+      box.appendChild(actions);
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
       overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
     });
   }
@@ -1235,6 +1227,171 @@ class BrigadeAssistant {
       }
     } catch (e) {
       alert('Ошибка: ' + e.message);
+    }
+  }
+
+  async loadDisputed() {
+    const list = document.getElementById('disputed-list');
+    if (!list) return;
+    if (!this.estate) {
+      list.innerHTML = '<p style="color:#888;padding:10px;">Сначала выбери хозяйство</p>';
+      return;
+    }
+    try {
+      const r = await this.apiFetch('/api/disputed?estate=' + encodeURIComponent(this.estate));
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        list.innerHTML = `<p style="color:#c00;padding:10px;">${this.escapeHtml(data.error || 'Ошибка')}</p>`;
+        return;
+      }
+      this.disputed = data.disputed || [];
+      this.renderDisputed();
+    } catch (e) {
+      list.innerHTML = `<p style="color:#c00;padding:10px;">${this.escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  renderDisputed() {
+    const list = document.getElementById('disputed-list');
+    if (!list) return;
+    if (!this.disputed || this.disputed.length === 0) {
+      list.innerHTML = '<p style="color:#888;padding:10px;">Спорных рядов нет</p>';
+      return;
+    }
+    list.innerHTML = this.disputed.map((d) => `
+      <div class="log-group">
+        <div><b>Ряд ${Number(d.row_num)}</b> · Кв.${this.escapeHtml(String(d.quarter))} клетка ${this.escapeHtml(String(d.cell))} · ${this.escapeHtml(d.work_type)}</div>
+        <div style="color:#888;font-size:13px;">Заявлял ${this.escapeHtml(d.claimed_by)} (${this.escapeHtml(d.claimed_date)})</div>
+        <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+          <button onclick="app.openDisputedAssign(${Number(d.id)})">Записать делавшим</button>
+          <button onclick="app.resolveDisputed(${Number(d.id)}, 'return-first')">Вернуть ${this.escapeHtml(d.claimed_by)}</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  // Открывает модалку выбора рабочих (одного или нескольких) с долями кустов,
+  // затем отправляет разбор. Деление — выбор бригадира: отметил несколько → кусты
+  // делятся (пустые доли = поровну, остаток первым).
+  async openDisputedAssign(id) {
+    const d = (this.disputed || []).find((x) => x.id === id);
+    if (!d) return;
+    const assignments = await this.showDivideModal({
+      row: d.row_num,
+      askShare: d.measure_mode === 'rows_bushes',
+      preselect: [],
+    });
+    if (!assignments) return;
+    await this.resolveDisputed(id, 'assign-actual', assignments);
+  }
+
+  // Окно деления ряда между рабочими: чекбоксы + доли кустов (пусто = поровну).
+  // preselect — имена, отмеченные заранее (занявший ряд и текущий рабочий).
+  // Возвращает Promise: массив [{employee, bushes|null}] (≥1) или null при отмене.
+  showDivideModal({ row, askShare, preselect = [] }) {
+    return new Promise((resolve) => {
+      if (!this.employees || this.employees.length === 0) {
+        this.showInfoModal('Список рабочих не загружен');
+        resolve(null);
+        return;
+      }
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      const box = document.createElement('div');
+      box.className = 'modal-box';
+
+      const title = document.createElement('div');
+      title.className = 'modal-title';
+      title.textContent = `Ряд ${row} — кто делал?`;
+      box.appendChild(title);
+
+      const hint = document.createElement('div');
+      hint.className = 'modal-text';
+      hint.textContent = askShare
+        ? 'Отметь рабочих. Если несколько — кусты делятся поровну; можно задать долю вручную.'
+        : 'Отметь рабочих, которые делали ряд.';
+      box.appendChild(hint);
+
+      const rows = [];
+      (this.employees || []).forEach((e) => {
+        const rowEl = document.createElement('label');
+        rowEl.style.display = 'flex';
+        rowEl.style.alignItems = 'center';
+        rowEl.style.gap = '8px';
+        rowEl.style.margin = '6px 0';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        if (preselect.includes(e.name)) cb.checked = true;
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = e.name;
+        nameSpan.style.flex = '1';
+        rowEl.appendChild(cb);
+        rowEl.appendChild(nameSpan);
+        let shareInput = null;
+        if (askShare) {
+          shareInput = document.createElement('input');
+          shareInput.className = 'modal-input';
+          shareInput.inputMode = 'numeric';
+          shareInput.placeholder = 'кусты';
+          shareInput.style.width = '90px';
+          shareInput.style.margin = '0';
+          rowEl.appendChild(shareInput);
+        }
+        box.appendChild(rowEl);
+        rows.push({ name: e.name, cb, shareInput });
+      });
+
+      const actions = document.createElement('div');
+      actions.className = 'modal-actions';
+      const primary = document.createElement('button');
+      primary.className = 'modal-primary';
+      primary.textContent = 'Записать';
+      const cancel = document.createElement('button');
+      cancel.className = 'modal-cancel';
+      cancel.textContent = 'Отмена';
+      actions.appendChild(primary);
+      actions.appendChild(cancel);
+      box.appendChild(actions);
+
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+
+      const close = (result) => { overlay.remove(); resolve(result); };
+      primary.addEventListener('click', () => {
+        const chosen = rows.filter((r) => r.cb.checked).map((r) => {
+          let bushes = null;
+          if (r.shareInput && r.shareInput.value.trim() !== '') {
+            const n = parseInt(r.shareInput.value, 10);
+            if (Number.isInteger(n) && n >= 0) bushes = n;
+          }
+          return { employee: r.name, bushes };
+        });
+        if (chosen.length === 0) return; // нечего записывать — ждём выбора
+        close(chosen);
+      });
+      cancel.addEventListener('click', () => close(null));
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+    });
+  }
+
+  async resolveDisputed(id, action, assignments) {
+    // Разобранный ряд ложится на сегодня (день, когда бригадир разобрался).
+    const body = { action, date: this.getTodayDate() };
+    if (action === 'assign-actual') body.assignments = assignments || [];
+    try {
+      const r = await this.apiFetch('/api/disputed/' + id + '/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        await this.showInfoModal(data.error || 'Не удалось разобрать ряд');
+        return;
+      }
+      await this.loadDisputed();
+    } catch (e) {
+      await this.showInfoModal(e.message);
     }
   }
 

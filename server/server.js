@@ -148,6 +148,23 @@ const getSecret = () => SESSION_SECRET;
         PRIMARY KEY (brigadier_id, date, employee_id)
       )
     `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS disputed_rows (
+        id SERIAL PRIMARY KEY,
+        brigadier_id INTEGER,
+        demo_session_id TEXT,
+        estate_id TEXT NOT NULL,
+        quarter TEXT NOT NULL,
+        cell TEXT NOT NULL,
+        work_type TEXT NOT NULL,
+        row_num INTEGER NOT NULL,
+        measure_mode TEXT NOT NULL DEFAULT 'rows_bushes',
+        claimed_by TEXT NOT NULL,
+        claimed_date TEXT NOT NULL,
+        note TEXT,
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
     // Заполняем общий список видов работ основными — один раз, если он пуст.
     const wtCount = await pool.query('SELECT COUNT(*)::int AS n FROM work_types');
     if (wtCount.rows[0].n === 0) {
@@ -963,6 +980,96 @@ function rowOwner(req) {
     : { col: 'brigadier_id', val: req.brigadier.id };
 }
 
+// Снимает ряд rowNum из записи logId (того же владельца) и пишет результат в БД:
+// если рядов не осталось — удаляет запись, иначе обновляет rows + bushes.
+// removedRowBushes — кусты ряда по инвентаризации (rows_only → 0). Возвращает true,
+// если запись найдена и обработана, иначе false.
+async function applyRowRemoval(ownerCol, ownerVal, logId, rowNum, removedRowBushes) {
+  const rec = await pool.query(
+    `SELECT rows, bushes FROM work_logs WHERE id = $1 AND ${ownerCol} = $2`,
+    [logId, ownerVal]
+  );
+  if (rec.rowCount === 0) return false;
+  const out = rowControl.removeRowFromRecord(
+    rec.rows[0].rows, rec.rows[0].bushes, rowNum, removedRowBushes
+  );
+  if (!out.found) return false;
+  if (out.deleted) {
+    await pool.query(
+      `DELETE FROM work_logs WHERE id = $1 AND ${ownerCol} = $2`,
+      [logId, ownerVal]
+    );
+  } else {
+    await pool.query(
+      `UPDATE work_logs SET rows = $1, bushes = $2 WHERE id = $3 AND ${ownerCol} = $4`,
+      [out.rows, out.bushes, logId, ownerVal]
+    );
+  }
+  return true;
+}
+
+// Заносит ряд в disputed_rows с учётом владельца (демо — по сессии, прод — по бригадиру).
+async function insertDisputed(d, owner, req) {
+  if (DEMO_MODE) {
+    await pool.query(
+      `INSERT INTO disputed_rows
+        (estate_id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date, demo_session_id, brigadier_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [d.estate, d.quarter, d.cell, d.work_type, d.row_num, d.measure_mode,
+       d.claimed_by, d.claimed_date, req.demo_session_id, 0]
+    );
+    return;
+  }
+  await pool.query(
+    `INSERT INTO disputed_rows
+      (estate_id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date, brigadier_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [d.estate, d.quarter, d.cell, d.work_type, d.row_num, d.measure_mode,
+     d.claimed_by, d.claimed_date, req.brigadier.id]
+  );
+}
+
+// Записывает ряд rowNum рабочему emp в указанном разрезе (ctx) с долей кустов bushes.
+// «Одна плашка на рабочего в клетке»: если у рабочего уже есть запись в этом
+// разрезе и дате — ряд добавляется к ней и кусты прибавляются; иначе создаётся
+// новая запись на один ряд. Демо/прод по DEMO_MODE.
+// ctx: { date, estate, quarter, cell, work_type, measure_mode }.
+async function upsertWorkLog(ownerCol, ownerVal, req, ctx, emp, rowNum, bushes) {
+  const ex = await pool.query(
+    `SELECT id, rows, bushes FROM work_logs
+     WHERE ${ownerCol} = $1 AND date = $2 AND estate_id = $3 AND quarter = $4
+       AND cell = $5 AND work_type = $6 AND measure_mode = $7 AND employee = $8
+     ORDER BY id LIMIT 1`,
+    [ownerVal, ctx.date, ctx.estate, String(ctx.quarter), String(ctx.cell), ctx.work_type, ctx.measure_mode, emp]
+  );
+  if (ex.rowCount > 0) {
+    const rec = ex.rows[0];
+    const nums = String(rec.rows || '').split(',').map((s) => parseInt(s, 10)).filter((n) => Number.isInteger(n));
+    if (!nums.includes(rowNum)) nums.push(rowNum);
+    nums.sort((a, b) => a - b);
+    await pool.query(
+      `UPDATE work_logs SET rows = $1, bushes = $2 WHERE id = $3 AND ${ownerCol} = $4`,
+      [nums.join(','), (rec.bushes || 0) + bushes, rec.id, ownerVal]
+    );
+    return;
+  }
+  if (DEMO_MODE) {
+    await pool.query(
+      `INSERT INTO work_logs
+        (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, demo_session_id, work_type, measure_mode, hours)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [ctx.date, ctx.estate, String(ctx.quarter), String(ctx.cell), emp, String(rowNum), bushes, 0, req.demo_session_id, ctx.work_type, ctx.measure_mode, null]
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO work_logs
+        (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, work_type, measure_mode, hours)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [ctx.date, ctx.estate, String(ctx.quarter), String(ctx.cell), emp, String(rowNum), bushes, req.brigadier.id, ctx.work_type, ctx.measure_mode, null]
+    );
+  }
+}
+
 // --- Этап 2: создание одной записи журнала (структурированный ввод) ---
 app.post('/api/logs', authOrDemo, async (req, res) => {
   try {
@@ -1120,7 +1227,7 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
 // Демо-осознанно: владелец и парсер выбираются по DEMO_MODE, как в /api/logs.
 app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
   try {
-    const { action, date, estate, quarter, cell, work_type, measure_mode, row, employee, firstLogId, shareToSecond } = req.body;
+    const { action, date, estate, quarter, cell, work_type, measure_mode, row, employee, firstLogId, assignments } = req.body;
 
     let invForParser, parserToUse;
     if (DEMO_MODE) {
@@ -1165,80 +1272,248 @@ app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
     }
 
     const owner = rowOwner(req);
+    const ctx = { date, estate, quarter, cell, work_type: work_type.trim(), measure_mode };
 
-    // Вставка одной записи журнала на ряд — с учётом режима (демо/прод).
-    const insertLog = async (emp, bushes) => {
-      if (DEMO_MODE) {
-        const ins = await pool.query(
-          `INSERT INTO work_logs
-            (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, demo_session_id, work_type, measure_mode, hours)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-          [date, estate, String(quarter), String(cell), emp, String(rowNum), bushes, 0, req.demo_session_id, work_type.trim(), measure_mode, null]
-        );
-        return ins.rows[0].id;
-      }
-      const ins = await pool.query(
-        `INSERT INTO work_logs
-          (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, work_type, measure_mode, hours)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-        [date, estate, String(quarter), String(cell), emp, String(rowNum), bushes, req.brigadier.id, work_type.trim(), measure_mode, null]
-      );
-      return ins.rows[0].id;
-    };
-
-    if (action === 'assign') {
-      // «Другой день»: записать ряд целиком на текущего рабочего, первого не трогаем.
-      const id = await insertLog(employee.trim(), rowBushes);
-      return res.json({ success: true, id });
-    }
-
-    if (action === 'split') {
-      // «Тот же день»: поделить кусты ряда между первым (firstLogId) и вторым (employee).
+    if (action === 'reassign' || action === 'postpone') {
+      // «Разные дни»: оба варианта снимают ряд с первого рабочего (firstLogId),
+      // отличаются тем, что делать дальше — записать второму или отложить в спорные.
       const fid = parseInt(firstLogId, 10);
       if (!Number.isInteger(fid)) {
         return res.status(400).json({ error: 'Не указана запись первого рабочего' });
       }
-
-      // Запись первого рабочего должна принадлежать тому же владельцу и ровно
-      // этому разрезу (дата+хозяйство+квартал+клетка+вид работ).
+      // Запись первого должна принадлежать тому же владельцу и тому же разрезу
+      // (без фильтра по дате — у первого она в ДРУГОЙ день).
       const firstRec = await pool.query(
-        `SELECT employee FROM work_logs
-         WHERE id = $1 AND ${owner.col} = $2 AND date = $3 AND estate_id = $4
-           AND quarter = $5 AND cell = $6 AND work_type = $7`,
-        [fid, owner.val, date, estate, String(quarter), String(cell), work_type.trim()]
+        `SELECT employee, date FROM work_logs
+         WHERE id = $1 AND ${owner.col} = $2 AND estate_id = $3
+           AND quarter = $4 AND cell = $5 AND work_type = $6`,
+        [fid, owner.val, estate, String(quarter), String(cell), work_type.trim()]
       );
       if (firstRec.rowCount === 0) {
         return res.status(404).json({ error: 'Запись первого рабочего не найдена' });
       }
-      // Делить ряд «сам с собой» нельзя — иначе у рабочего молча уполовинятся кусты.
-      if (firstRec.rows[0].employee === employee.trim()) {
-        return res.status(400).json({ error: 'Ряд уже записан на этого рабочего' });
-      }
 
-      const share = (shareToSecond === undefined || shareToSecond === null || shareToSecond === '')
-        ? null : parseInt(shareToSecond, 10);
-
-      let parts = { first: 0, second: 0 };
-      if (measure_mode === 'rows_bushes') {
-        try {
-          parts = rowControl.splitBushes(rowBushes, share);
-        } catch (e) {
-          return res.status(400).json({ error: e.message });
+      if (action === 'reassign') {
+        if (firstRec.rows[0].employee === employee.trim()) {
+          return res.status(400).json({ error: 'Ряд уже записан на этого рабочего' });
         }
-        // Уменьшаем кусты первого на долю второго (ряд остаётся в его записи).
-        await pool.query(
-          `UPDATE work_logs SET bushes = GREATEST(bushes - $1, 0)
-           WHERE id = $2 AND ${owner.col} = $3`,
-          [parts.second, fid, owner.val]
-        );
+        const removed = await applyRowRemoval(owner.col, owner.val, fid, rowNum, rowBushes);
+        if (!removed) {
+          return res.status(409).json({ error: 'Ряд уже снят с первого рабочего' });
+        }
+        // Ряд целиком — второму рабочему (одна плашка: слияние с его записью).
+        await upsertWorkLog(owner.col, owner.val, req, ctx, employee.trim(), rowNum, rowBushes);
+        return res.json({ success: true });
       }
-      const id = await insertLog(employee.trim(), parts.second);
-      return res.json({ success: true, id });
+
+      // postpone: снимаем ряд с первого; если снять нечего — 409; иначе в «Спорные».
+      const removed = await applyRowRemoval(owner.col, owner.val, fid, rowNum, rowBushes);
+      if (!removed) {
+        return res.status(409).json({ error: 'Ряд уже снят с первого рабочего' });
+      }
+      await insertDisputed({
+        estate, quarter: String(quarter), cell: String(cell),
+        work_type: work_type.trim(), row_num: rowNum, measure_mode,
+        claimed_by: firstRec.rows[0].employee, claimed_date: firstRec.rows[0].date,
+      }, owner, req);
+      return res.json({ success: true });
+    }
+
+    if (action === 'divide') {
+      // Поделить ряд между НЕСКОЛЬКИМИ рабочими (assignments). Ряд снимается с
+      // первого (firstLogId), кусты ряда (из инвентаря) делятся на отмеченных
+      // (явные доли уважаем, остаток поровну по пустым), каждому — одна плашка.
+      const fid = parseInt(firstLogId, 10);
+      if (!Number.isInteger(fid)) {
+        return res.status(400).json({ error: 'Не указана запись первого рабочего' });
+      }
+      const firstRec = await pool.query(
+        `SELECT employee FROM work_logs
+         WHERE id = $1 AND ${owner.col} = $2 AND estate_id = $3
+           AND quarter = $4 AND cell = $5 AND work_type = $6`,
+        [fid, owner.val, estate, String(quarter), String(cell), work_type.trim()]
+      );
+      if (firstRec.rowCount === 0) {
+        return res.status(404).json({ error: 'Запись первого рабочего не найдена' });
+      }
+
+      const list = Array.isArray(assignments) ? assignments : [];
+      const cleaned = list
+        .map((a) => ({
+          employee: a && a.employee ? String(a.employee).trim() : '',
+          bushes: (a && a.bushes !== null && a.bushes !== undefined && a.bushes !== '')
+            ? parseInt(a.bushes, 10) : null,
+        }))
+        .filter((a) => a.employee);
+      if (cleaned.length === 0) {
+        return res.status(400).json({ error: 'Выбери хотя бы одного рабочего' });
+      }
+
+      let toAssign;
+      if (measure_mode !== 'rows_bushes') {
+        toAssign = cleaned.map((a) => ({ employee: a.employee, bushes: 0 }));
+      } else {
+        for (const a of cleaned) {
+          if (a.bushes !== null && (!Number.isInteger(a.bushes) || a.bushes < 0)) {
+            return res.status(400).json({ error: 'Кусты должны быть неотрицательным числом' });
+          }
+        }
+        const explicitSum = cleaned.reduce((s, a) => s + (a.bushes !== null ? a.bushes : 0), 0);
+        const blanksCount = cleaned.filter((a) => a.bushes === null).length;
+        const remaining = Math.max(rowBushes - explicitSum, 0);
+        const shares = rowControl.distributeBushes(remaining, blanksCount);
+        let bi = 0;
+        toAssign = cleaned.map((a) => ({
+          employee: a.employee,
+          bushes: a.bushes !== null ? a.bushes : shares[bi++],
+        }));
+      }
+
+      // Снимаем ряд с первого рабочего, затем раздаём доли отмеченным.
+      const removed = await applyRowRemoval(owner.col, owner.val, fid, rowNum, rowBushes);
+      if (!removed) {
+        return res.status(409).json({ error: 'Ряд уже снят с первого рабочего' });
+      }
+      for (const a of toAssign) {
+        await upsertWorkLog(owner.col, owner.val, req, ctx, a.employee, rowNum, a.bushes);
+      }
+      return res.json({ success: true });
     }
 
     return res.status(400).json({ error: 'Неизвестное действие' });
   } catch (error) {
     console.error('Resolve error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Список спорных рядов владельца по хозяйству.
+app.get('/api/disputed', authOrDemo, async (req, res) => {
+  try {
+    const { estate } = req.query;
+    if (!estate) return res.status(400).json({ error: 'Укажи estate' });
+    let result;
+    if (DEMO_MODE) {
+      result = await pool.query(
+        `SELECT id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date
+         FROM disputed_rows WHERE demo_session_id = $1 AND estate_id = $2
+         ORDER BY created_at DESC`,
+        [req.demo_session_id, estate]
+      );
+    } else {
+      result = await pool.query(
+        `SELECT id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date
+         FROM disputed_rows WHERE brigadier_id = $1 AND estate_id = $2
+         ORDER BY created_at DESC`,
+        [req.brigadier.id, estate]
+      );
+    }
+    res.json({ disputed: result.rows });
+  } catch (error) {
+    console.error('Disputed list error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Разбор спорного ряда:
+//   'assign-actual' — записать тем, кто реально делал: один или несколько рабочих,
+//      кусты ряда делятся (assignments: [{employee, bushes?}], пустые доли — поровну);
+//   'return-first'  — вернуть заявителю (одна запись с полными кустами ряда).
+// Все записи создаются на дату claimed_date; ряд считается одним. После — ряд
+// убирается из спорных.
+app.post('/api/disputed/:id/resolve', authOrDemo, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'Некорректный id' });
+    }
+    const { action, assignments, date } = req.body;
+    if (!['assign-actual', 'return-first'].includes(action)) {
+      return res.status(400).json({ error: 'Неизвестное действие' });
+    }
+
+    const owner = rowOwner(req);
+    const rec = await pool.query(
+      `SELECT * FROM disputed_rows WHERE id = $1 AND ${owner.col} = $2`,
+      [id, owner.val]
+    );
+    if (rec.rowCount === 0) {
+      return res.status(404).json({ error: 'Спорный ряд не найден' });
+    }
+    const d = rec.rows[0];
+
+    // Кусты ряда из инвентаризации текущего режима (для rows_only = 0).
+    let parserToUse;
+    if (DEMO_MODE) {
+      parserToUse = new DataParser(await demo.getDemoInventory(pool, req.demo_session_id));
+    } else {
+      parserToUse = parser;
+    }
+    let rowBushes = 0;
+    if (d.measure_mode === 'rows_bushes') {
+      try {
+        rowBushes = parserToUse.getBushesCount(d.estate_id, String(d.quarter), String(d.cell), [d.row_num]);
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+    }
+
+    // Формируем список (рабочий, кусты) для вставки.
+    let toInsert = [];
+    if (action === 'return-first') {
+      toInsert = [{ employee: d.claimed_by, bushes: rowBushes }];
+    } else {
+      const list = Array.isArray(assignments) ? assignments : [];
+      const cleaned = list
+        .map((a) => ({
+          employee: a && a.employee ? String(a.employee).trim() : '',
+          bushes: (a && a.bushes !== null && a.bushes !== undefined && a.bushes !== '')
+            ? parseInt(a.bushes, 10) : null,
+        }))
+        .filter((a) => a.employee);
+      if (cleaned.length === 0) {
+        return res.status(400).json({ error: 'Выбери хотя бы одного рабочего' });
+      }
+      if (d.measure_mode !== 'rows_bushes') {
+        toInsert = cleaned.map((a) => ({ employee: a.employee, bushes: 0 }));
+      } else {
+        for (const a of cleaned) {
+          if (a.bushes !== null && (!Number.isInteger(a.bushes) || a.bushes < 0)) {
+            return res.status(400).json({ error: 'Кусты должны быть неотрицательным числом' });
+          }
+        }
+        // Явные доли уважаем, остаток раздаём поровну по пустым.
+        const explicitSum = cleaned.reduce((s, a) => s + (a.bushes !== null ? a.bushes : 0), 0);
+        const blanksCount = cleaned.filter((a) => a.bushes === null).length;
+        const remaining = Math.max(rowBushes - explicitSum, 0);
+        const shares = rowControl.distributeBushes(remaining, blanksCount);
+        let bi = 0;
+        toInsert = cleaned.map((a) => ({
+          employee: a.employee,
+          bushes: a.bushes !== null ? a.bushes : shares[bi++],
+        }));
+      }
+    }
+
+    // Записываем долю каждому рабочему — одна плашка на рабочего в клетке (слияние).
+    // Дата разбора — «сегодня» (клиент шлёт date); если не пришла/некорректна —
+    // запасной вариант дата заявки.
+    const resolveDate = (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) ? date : d.claimed_date;
+    const ctx = {
+      date: resolveDate, estate: d.estate_id, quarter: d.quarter,
+      cell: d.cell, work_type: d.work_type, measure_mode: d.measure_mode,
+    };
+    for (const a of toInsert) {
+      await upsertWorkLog(owner.col, owner.val, req, ctx, a.employee, d.row_num, a.bushes);
+    }
+
+    await pool.query(
+      `DELETE FROM disputed_rows WHERE id = $1 AND ${owner.col} = $2`,
+      [id, owner.val]
+    );
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Disputed resolve error:', error);
     res.status(500).json({ error: error.message });
   }
 });
