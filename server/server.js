@@ -1102,18 +1102,26 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
         return res.status(400).json({ error: e.message });
       }
 
-      // Детект пересечений рядов в разрезе вида работ (по владельцу режима).
-      const owner = rowOwner(req);
-      const occupied = await getOccupiedRows(owner.col, owner.val, estate, String(quarter), String(cell), work_type.trim());
-      const cls = rowControl.classifyRows(rowNums, occupied, date);
+      // Контроль пересечений — только для режимов с кустами/рядами, под которые
+      // он спроектирован (rows_bushes / rows_only). Прочие «рядовые» режимы демо
+      // (столбы, тонны, погонные метры и т.п.) попадают в этот же else, но их не
+      // трогаем — для них деление/разрешение конфликта не предусмотрено.
+      if (measure_mode === 'rows_bushes' || measure_mode === 'rows_only') {
+        // Детект пересечений рядов в разрезе вида работ (по владельцу режима).
+        const owner = rowOwner(req);
+        const occupied = await getOccupiedRows(owner.col, owner.val, estate, String(quarter), String(cell), work_type.trim());
+        const cls = rowControl.classifyRows(rowNums, occupied, date);
 
-      // Все ряды заняты — ничего не сохраняем, отдаём конфликты на разрешение.
-      if (cls.free.length === 0 && (cls.sameDay.length || cls.otherDay.length)) {
-        return res.json({ success: false, savedRows: [], conflicts: { sameDay: cls.sameDay, otherDay: cls.otherDay } });
+        // Все ряды заняты — ничего не сохраняем, отдаём конфликты на разрешение.
+        if (cls.free.length === 0 && (cls.sameDay.length || cls.otherDay.length)) {
+          return res.json({ success: false, savedRows: [], conflicts: { sameDay: cls.sameDay, otherDay: cls.otherDay } });
+        }
+
+        // Сохраняем только свободные ряды; конфликтные вернём клиенту.
+        rowNums = cls.free;
+        req._rowConflicts = { sameDay: cls.sameDay, otherDay: cls.otherDay };
       }
 
-      // Сохраняем только свободные ряды; конфликтные вернём клиенту.
-      rowNums = cls.free;
       rowsStr = rowNums.join(',');
       if (measure_mode === 'rows_bushes') {
         try {
@@ -1122,7 +1130,6 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
           return res.status(400).json({ error: e.message });
         }
       }
-      req._rowConflicts = { sameDay: cls.sameDay, otherDay: cls.otherDay };
     }
 
     // Защита от непреднамеренных дублей: если ровно такая же запись была
