@@ -1297,19 +1297,21 @@ app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
     }
 
     if (action === 'split') {
-      // «Тот же день»: поделить кусты ряда между первым (firstLogId) и вторым (employee).
+      // Поделить кусты ряда между первым (firstLogId) и вторым (employee).
+      // Используется и в «тот же день», и в «разные дни» — поэтому БЕЗ фильтра по
+      // дате (у первого запись может быть за другой день; id и так уникален).
       const fid = parseInt(firstLogId, 10);
       if (!Number.isInteger(fid)) {
         return res.status(400).json({ error: 'Не указана запись первого рабочего' });
       }
 
       // Запись первого рабочего должна принадлежать тому же владельцу и ровно
-      // этому разрезу (дата+хозяйство+квартал+клетка+вид работ).
+      // этому разрезу (хозяйство+квартал+клетка+вид работ).
       const firstRec = await pool.query(
         `SELECT employee FROM work_logs
-         WHERE id = $1 AND ${owner.col} = $2 AND date = $3 AND estate_id = $4
-           AND quarter = $5 AND cell = $6 AND work_type = $7`,
-        [fid, owner.val, date, estate, String(quarter), String(cell), work_type.trim()]
+         WHERE id = $1 AND ${owner.col} = $2 AND estate_id = $3
+           AND quarter = $4 AND cell = $5 AND work_type = $6`,
+        [fid, owner.val, estate, String(quarter), String(cell), work_type.trim()]
       );
       if (firstRec.rowCount === 0) {
         return res.status(404).json({ error: 'Запись первого рабочего не найдена' });
