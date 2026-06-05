@@ -1331,11 +1331,11 @@ class BrigadeAssistant {
     }
     list.innerHTML = this.disputed.map((d) => `
       <div class="log-group">
-        <div><b>Ряд ${d.row_num}</b> · Кв.${this.escapeHtml(String(d.quarter))} клетка ${this.escapeHtml(String(d.cell))} · ${this.escapeHtml(d.work_type)}</div>
+        <div><b>Ряд ${Number(d.row_num)}</b> · Кв.${this.escapeHtml(String(d.quarter))} клетка ${this.escapeHtml(String(d.cell))} · ${this.escapeHtml(d.work_type)}</div>
         <div style="color:#888;font-size:13px;">Заявлял ${this.escapeHtml(d.claimed_by)} (${this.escapeHtml(d.claimed_date)})</div>
         <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
-          <button onclick="app.openDisputedAssign(${d.id})">Записать делавшим</button>
-          <button onclick="app.resolveDisputed(${d.id}, 'return-first')">Вернуть ${this.escapeHtml(d.claimed_by)}</button>
+          <button onclick="app.openDisputedAssign(${Number(d.id)})">Записать делавшим</button>
+          <button onclick="app.resolveDisputed(${Number(d.id)}, 'return-first')">Вернуть ${this.escapeHtml(d.claimed_by)}</button>
         </div>
       </div>
     `).join('');
@@ -1355,6 +1355,11 @@ class BrigadeAssistant {
   // Возвращает Promise: массив [{employee, bushes|null}] (≥1) или null при отмене.
   showDisputedAssignModal(d) {
     return new Promise((resolve) => {
+      if (!this.employees || this.employees.length === 0) {
+        this.showInfoModal('Список рабочих не загружен');
+        resolve(null);
+        return;
+      }
       const askShare = d.measure_mode === 'rows_bushes';
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
