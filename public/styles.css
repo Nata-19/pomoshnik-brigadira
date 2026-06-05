@@ -1121,14 +1121,15 @@ button:active {
 }
 
 .modal-actions-col {
-  flex-direction: column;
+    flex-direction: column;
 }
+
 .modal-secondary {
-  padding: 12px;
-  border: 1px solid #2c3e50;
-  border-radius: 8px;
-  background: #fff;
-  color: #2c3e50;
-  font-size: 15px;
-  cursor: pointer;
+    padding: 12px;
+    border: 1px solid #2c3e50;
+    border-radius: 8px;
+    background: #fff;
+    color: #2c3e50;
+    font-size: 15px;
+    cursor: pointer;
 }
