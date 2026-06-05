@@ -1016,7 +1016,6 @@ class BrigadeAssistant {
   // Тот же день: показываем модалку «поделить?» с полем кустов (для rows_bushes).
   async resolveSameDay(c, employee, body) {
     const res = await this.showConflictModal({
-      kind: 'sameDay',
       row: c.row,
       occupantName: c.occupant.employee,
       employee,
@@ -1138,7 +1137,7 @@ class BrigadeAssistant {
   // в отличие от confirm()/prompt(), которые в standalone Android не показываются).
   // Возвращает Promise: { action, shareToSecond } для подтверждения, либо null при отмене.
   // Имена подставляются через textContent — без innerHTML, чтобы имя не сломало разметку.
-  showConflictModal({ kind, row, occupantName, occupantDate, employee, askShare }) {
+  showConflictModal({ row, occupantName, employee, askShare }) {
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
@@ -1152,11 +1151,7 @@ class BrigadeAssistant {
 
       const text = document.createElement('div');
       text.className = 'modal-text';
-      if (kind === 'sameDay') {
-        text.textContent = `Сегодня этот ряд уже записан на ${occupantName}. Поделить ряд между ними?`;
-      } else {
-        text.textContent = `ℹ️ Ряд уже отмечал ${occupantName} (${occupantDate}). Всё равно записать на ${employee}?`;
-      }
+      text.textContent = `Сегодня этот ряд уже записан на ${occupantName}. Поделить ряд между ними?`;
       box.appendChild(text);
 
       let shareInput = null;
@@ -1172,7 +1167,7 @@ class BrigadeAssistant {
       actions.className = 'modal-actions';
       const primary = document.createElement('button');
       primary.className = 'modal-primary';
-      primary.textContent = kind === 'sameDay' ? 'Поделить' : `Записать на ${employee}`;
+      primary.textContent = 'Поделить';
       const cancel = document.createElement('button');
       cancel.className = 'modal-cancel';
       cancel.textContent = 'Отмена';
@@ -1189,16 +1184,12 @@ class BrigadeAssistant {
       };
 
       primary.addEventListener('click', () => {
-        if (kind === 'sameDay') {
-          let shareToSecond = null;
-          if (shareInput && shareInput.value.trim() !== '') {
-            const n = parseInt(shareInput.value, 10);
-            if (Number.isInteger(n) && n >= 0) shareToSecond = n;
-          }
-          close({ action: 'split', shareToSecond });
-        } else {
-          close({ action: 'assign' });
+        let shareToSecond = null;
+        if (shareInput && shareInput.value.trim() !== '') {
+          const n = parseInt(shareInput.value, 10);
+          if (Number.isInteger(n) && n >= 0) shareToSecond = n;
         }
+        close({ action: 'split', shareToSecond });
       });
       cancel.addEventListener('click', () => close(null));
       overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
