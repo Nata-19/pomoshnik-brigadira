@@ -1041,31 +1041,97 @@ class BrigadeAssistant {
   }
 
   // Другой день: модалка-предупреждение «уже делал такой-то, дата». Записать на текущего?
+  // Другой день: широкое меню — отменить / отложить в спорные / переписать / поделить.
   async resolveOtherDay(c, employee, body) {
-    const res = await this.showConflictModal({
-      kind: 'otherDay',
+    const res = await this.showOtherDayMenu({
       row: c.row,
       occupantName: c.occupant.employee,
       occupantDate: c.occupant.date,
       employee,
-      askShare: false,
+      askShare: body.measure_mode === 'rows_bushes',
     });
-    if (!res) return;
+    if (!res || res.action === 'cancel') return;
+
+    const payload = {
+      date: body.date, estate: body.estate, quarter: body.quarter, cell: body.cell,
+      work_type: body.work_type, measure_mode: body.measure_mode,
+      row: c.row, employee, firstLogId: c.occupant.logId,
+    };
+    if (res.action === 'split') payload.action = 'split';
+    else if (res.action === 'reassign') payload.action = 'reassign';
+    else if (res.action === 'postpone') payload.action = 'postpone';
+    if (res.action === 'split') payload.shareToSecond = res.shareToSecond;
 
     const r = await this.apiFetch('/api/logs/resolve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'assign',
-        date: body.date, estate: body.estate, quarter: body.quarter, cell: body.cell,
-        work_type: body.work_type, measure_mode: body.measure_mode,
-        row: c.row, employee,
-      }),
+      body: JSON.stringify(payload),
     });
     if (!r.ok) {
       const data = await r.json().catch(() => ({}));
-      await this.showInfoModal(`Ряд ${c.row}: ${data.error || 'не удалось записать ряд'}`);
+      await this.showInfoModal(`Ряд ${c.row}: ${data.error || 'не удалось обработать ряд'}`);
     }
+  }
+
+  // Модалка «разные дни»: 4 действия. Возвращает Promise с одним из:
+  // { action: 'cancel' } | { action: 'postpone' } | { action: 'reassign' } |
+  // { action: 'split', shareToSecond } ; либо null при закрытии по фону.
+  showOtherDayMenu({ row, occupantName, occupantDate, employee, askShare }) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      const box = document.createElement('div');
+      box.className = 'modal-box';
+
+      const title = document.createElement('div');
+      title.className = 'modal-title';
+      title.textContent = `Ряд ${row}`;
+      box.appendChild(title);
+
+      const text = document.createElement('div');
+      text.className = 'modal-text';
+      text.textContent = `Этот ряд уже отмечал ${occupantName} (${occupantDate}). Что делаем?`;
+      box.appendChild(text);
+
+      let shareInput = null;
+      if (askShare) {
+        shareInput = document.createElement('input');
+        shareInput.className = 'modal-input';
+        shareInput.inputMode = 'numeric';
+        shareInput.placeholder = `Кусты для ${employee} при делении (пусто = поровну)`;
+        box.appendChild(shareInput);
+      }
+
+      const actions = document.createElement('div');
+      actions.className = 'modal-actions modal-actions-col';
+
+      const mkBtn = (label, cls, onClick) => {
+        const b = document.createElement('button');
+        b.className = cls;
+        b.textContent = label;
+        b.addEventListener('click', onClick);
+        actions.appendChild(b);
+      };
+
+      const close = (result) => { overlay.remove(); resolve(result); };
+
+      mkBtn(`Переписать на ${employee}`, 'modal-primary', () => close({ action: 'reassign' }));
+      mkBtn('Поделить кусты', 'modal-secondary', () => {
+        let shareToSecond = null;
+        if (shareInput && shareInput.value.trim() !== '') {
+          const n = parseInt(shareInput.value, 10);
+          if (Number.isInteger(n) && n >= 0) shareToSecond = n;
+        }
+        close({ action: 'split', shareToSecond });
+      });
+      mkBtn('Отложить в «Спорные»', 'modal-secondary', () => close({ action: 'postpone' }));
+      mkBtn('Отменить запись', 'modal-cancel', () => close({ action: 'cancel' }));
+
+      box.appendChild(actions);
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+    });
   }
 
   // Внутристраничная модалка разрешения конфликта (работает в установленном PWA,
