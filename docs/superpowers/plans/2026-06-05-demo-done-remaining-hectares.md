@@ -1,0 +1,459 @@
+# Демо-отчёт «Выполнение» (сделано/осталось в гектарах) — план реализации
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Добавить в демо вкладку «Выполнение» — отчёт по виду работ × квартал, переводящий записанные ряды в гектары (сделано/осталось), накопительно.
+
+**Architecture:** Чистый агрегатор (`server/hectaresReport.js`, юнит-тесты без БД) → серверный endpoint `GET /api/report/hectares` (demo-aware, читает `work_logs` + инвентарь, зовёт агрегатор) → клиентская вкладка (отрисовка + фильтры-чипы). Расчёт только на сервере; клиент рисует и фильтрует.
+
+**Tech Stack:** Node.js/Express, `pg`, ванильный JS PWA. Тесты — встроенный `node --test`. Перевод рядов в га — существующий `parser.getHectaresForRows` (parser.js:331).
+
+**Спека:** `docs/superpowers/specs/2026-06-05-demo-done-remaining-hectares-design.md`.
+
+**Реализуем ПОСЛЕ Фазы 3 контроля рядов.** Метод — Subagent-Driven в git worktree от `demo-five-modes`.
+
+---
+
+## File Structure
+
+- **Create:** `server/hectaresReport.js` — чистая функция агрегации (без БД, без Express). Единственная ответственность: из плоского списка записей + двух колбэков перевода построить строки отчёта.
+- **Create:** `test/hectaresReport.test.js` — юнит-тесты агрегатора.
+- **Modify:** `server/server.js` — новый endpoint `GET /api/report/hectares` (рядом с `GET /api/report`, ~строка 1858) + `require` агрегатора вверху файла.
+- **Modify:** `public/js/app.js` — кнопка вкладки (~строка 508), блок `tab-content#perf-tab` (~строка 544), методы `loadPerformance()`, `renderPerformance()`, состояние фильтров.
+
+---
+
+## Task 1: Чистый агрегатор `server/hectaresReport.js`
+
+**Files:**
+- Create: `server/hectaresReport.js`
+- Test: `test/hectaresReport.test.js`
+
+- [ ] **Step 1: Написать падающий тест**
+
+Создать `test/hectaresReport.test.js`:
+
+```js
+const test = require('node:test');
+const assert = require('node:assert');
+const { buildHectaresReport, parseRowsCsv } = require('../server/hectaresReport');
+
+// Фейковые колбэки перевода: площадь клетки = (уникальных рядов) * 0.1 га;
+// всего по кварталу = 1 га на каждую известную клетку (по carte ниже).
+const fakeCellHa = (estate, q, c, rowsArr) => {
+  if (c === 'NOHA') throw new Error('нет площади');
+  return Math.round(rowsArr.length * 0.1 * 100) / 100;
+};
+const fakeQuarterTotalHa = (estate, q) => (q === '2' ? 1.0 : 0.5);
+
+test('дедупликация: один ряд, записанный двум рабочим, считается один раз', () => {
+  const logs = [
+    { estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'A', rows: '1,2' },
+    { estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'A', rows: '2,3' },
+  ];
+  const out = buildHectaresReport(logs, fakeCellHa, fakeQuarterTotalHa);
+  assert.strictEqual(out.length, 1);
+  // уникальные ряды {1,2,3} -> 3*0.1 = 0.3 га
+  assert.strictEqual(out[0].done_ha, 0.3);
+  assert.strictEqual(out[0].total_ha, 1.0);
+  assert.strictEqual(out[0].remaining_ha, 0.7);
+});
+
+test('накопление по разным датам/клеткам внутри пары вид×квартал', () => {
+  const logs = [
+    { estate_id: 'Яблоня', work_type: 'Полив', quarter: '2', cell: 'A', rows: '1,2,3,4,5' },
+    { estate_id: 'Яблоня', work_type: 'Полив', quarter: '2', cell: 'B', rows: '1,2,3,4,5' },
+  ];
+  const out = buildHectaresReport(logs, fakeCellHa, fakeQuarterTotalHa);
+  assert.strictEqual(out[0].done_ha, 1.0); // 0.5 + 0.5
+  assert.strictEqual(out[0].remaining_ha, 0.0);
+});
+
+test('осталось зажато в 0, не уходит в минус', () => {
+  const logs = [
+    { estate_id: 'Яблоня', work_type: 'Полив', quarter: '5', cell: 'A', rows: '1,2,3,4,5,6,7,8' },
+  ];
+  // done 0.8, total 0.5 -> remaining 0 (не -0.3)
+  const out = buildHectaresReport(logs, fakeCellHa, fakeQuarterTotalHa);
+  assert.strictEqual(out[0].remaining_ha, 0.0);
+});
+
+test('клетка без площади пропускается, остальные считаются', () => {
+  const logs = [
+    { estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'NOHA', rows: '1,2,3' },
+    { estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'A', rows: '1,2' },
+  ];
+  const out = buildHectaresReport(logs, fakeCellHa, fakeQuarterTotalHa);
+  assert.strictEqual(out[0].done_ha, 0.2); // только клетка A
+});
+
+test('пустой ввод -> пустой массив', () => {
+  assert.deepStrictEqual(buildHectaresReport([], fakeCellHa, fakeQuarterTotalHa), []);
+});
+
+test('parseRowsCsv чистит пробелы и пустые', () => {
+  assert.deepStrictEqual(parseRowsCsv(' 1, 2 ,,3 '), ['1', '2', '3']);
+  assert.deepStrictEqual(parseRowsCsv(null), []);
+});
+
+test('сортировка: по estate, виду работ (ru), кварталу (числом)', () => {
+  const logs = [
+    { estate_id: 'Яблоня', work_type: 'Полив', quarter: '10', cell: 'A', rows: '1' },
+    { estate_id: 'Яблоня', work_type: 'Полив', quarter: '2', cell: 'A', rows: '1' },
+    { estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'A', rows: '1' },
+  ];
+  const out = buildHectaresReport(logs, fakeCellHa, fakeQuarterTotalHa);
+  assert.deepStrictEqual(
+    out.map(r => `${r.work_type}|${r.quarter}`),
+    ['Обрезка|2', 'Полив|2', 'Полив|10']
+  );
+});
+```
+
+- [ ] **Step 2: Запустить тест — убедиться, что падает**
+
+Run: `node --test test/hectaresReport.test.js`
+Expected: FAIL — `Cannot find module '../server/hectaresReport'`.
+
+- [ ] **Step 3: Реализовать агрегатор**
+
+Создать `server/hectaresReport.js`:
+
+```js
+'use strict';
+
+// Разбирает CSV рядов ("1, 2 ,,3") в массив непустых строк-номеров.
+function parseRowsCsv(s) {
+  return String(s || '').split(',').map(x => x.trim()).filter(Boolean);
+}
+
+const round2 = (n) => Math.round(n * 100) / 100;
+
+// Строит строки отчёта «Выполнение».
+//   logRows: [{ estate_id, work_type, quarter, cell, rows(CSV) }] — записи work_logs c непустыми rows.
+//   cellHa(estate, quarter, cell, uniqueRowsArr) -> число га (может бросить -> клетку пропускаем).
+//   quarterTotalHa(estate, quarter) -> вся площадь квартала, га.
+// Возвращает [{ estate, work_type, quarter, done_ha, total_ha, remaining_ha }],
+// отсортированные по estate, виду работ (ru), кварталу (числом, затем строкой).
+function buildHectaresReport(logRows, cellHa, quarterTotalHa) {
+  // group[estate|wt|quarter] = { estate, work_type, quarter, cells: Map<cell, Set<row>> }
+  const groups = new Map();
+  for (const r of logRows) {
+    const estate = r.estate_id;
+    const wt = (r.work_type && String(r.work_type).trim()) ? r.work_type : '(без вида работ)';
+    const quarter = String(r.quarter);
+    const cell = String(r.cell);
+    const key = `${estate}${wt}${quarter}`;
+    let g = groups.get(key);
+    if (!g) { g = { estate, work_type: wt, quarter, cells: new Map() }; groups.set(key, g); }
+    let set = g.cells.get(cell);
+    if (!set) { set = new Set(); g.cells.set(cell, set); }
+    for (const num of parseRowsCsv(r.rows)) set.add(num);
+  }
+
+  const result = [];
+  for (const g of groups.values()) {
+    let done = 0;
+    for (const [cell, set] of g.cells) {
+      let ha;
+      try { ha = cellHa(g.estate, g.quarter, cell, Array.from(set)); }
+      catch { continue; } // клетка без площади / нет в инвентаре — пропускаем
+      if (isFinite(ha)) done += ha;
+    }
+    done = round2(done);
+    const total = round2(Number(quarterTotalHa(g.estate, g.quarter)) || 0);
+    const remaining = round2(Math.max(0, total - done));
+    result.push({ estate: g.estate, work_type: g.work_type, quarter: g.quarter,
+      done_ha: done, total_ha: total, remaining_ha: remaining });
+  }
+
+  const qnum = (q) => { const n = parseInt(q, 10); return Number.isNaN(n) ? Infinity : n; };
+  result.sort((a, b) =>
+    a.estate.localeCompare(b.estate, 'ru') ||
+    a.work_type.localeCompare(b.work_type, 'ru') ||
+    qnum(a.quarter) - qnum(b.quarter) ||
+    a.quarter.localeCompare(b.quarter, 'ru'));
+  return result;
+}
+
+module.exports = { buildHectaresReport, parseRowsCsv };
+```
+
+- [ ] **Step 4: Запустить тест — убедиться, что проходит**
+
+Run: `node --test test/hectaresReport.test.js`
+Expected: PASS (7 тестов).
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add server/hectaresReport.js test/hectaresReport.test.js
+git commit -m "feat(demo): чистый агрегатор отчёта Выполнение (га) + тесты"
+```
+
+---
+
+## Task 2: Серверный endpoint `GET /api/report/hectares`
+
+**Files:**
+- Modify: `server/server.js` (require вверху; новый endpoint после `GET /api/report`, ~строка 1858)
+
+- [ ] **Step 1: Подключить агрегатор**
+
+В шапке `server/server.js`, рядом с другими `require` модулей `server/` (например где подключается `parser`/`rowControl`), добавить:
+
+```js
+const { buildHectaresReport } = require('./hectaresReport');
+```
+
+- [ ] **Step 2: Добавить endpoint**
+
+Сразу ПОСЛЕ блока `app.get('/api/report', ...)` (после его закрывающей `});`, ~строка 1860) вставить:
+
+```js
+// Отчёт «Выполнение»: по виду работ × квартал — сколько гектаров сделано
+// (накопительно, уникальные ряды -> га) и сколько осталось до площади квартала.
+// Только демо; ввод остаётся в рядах, это лишь экран-пересчёт.
+app.get('/api/report/hectares', authOrDemo, async (req, res) => {
+  try {
+    let parserToUse;
+    if (DEMO_MODE) {
+      parserToUse = new DataParser(await demo.getDemoInventory(pool, req.demo_session_id));
+    } else {
+      parserToUse = parser;
+    }
+
+    let result;
+    if (DEMO_MODE) {
+      result = await pool.query(
+        `SELECT estate_id, quarter, cell, work_type, rows
+         FROM work_logs
+         WHERE demo_session_id = $1 AND rows IS NOT NULL AND rows <> ''`,
+        [req.demo_session_id]
+      );
+    } else {
+      result = await pool.query(
+        `SELECT estate_id, quarter, cell, work_type, rows
+         FROM work_logs
+         WHERE brigadier_id = $1 AND rows IS NOT NULL AND rows <> ''`,
+        [req.brigadier.id]
+      );
+    }
+
+    // Перевод рядов клетки в га (бросает, если у клетки нет площади — агрегатор ловит).
+    const cellHa = (estate, quarter, cell, rowsArr) =>
+      parserToUse.getHectaresForRows(estate, String(quarter), String(cell), rowsArr);
+
+    // Вся площадь квартала = сумма hectares известных клеток квартала из инвентаря.
+    const quarterTotalHa = (estate, quarter) => {
+      const edata = parserToUse.inventory && parserToUse.inventory.estates
+        ? parserToUse.inventory.estates[estate] : null;
+      if (!edata) return 0;
+      const qdata = edata.quarters[String(quarter)];
+      if (!qdata || !qdata.cells) return 0;
+      let sum = 0;
+      for (const ck of Object.keys(qdata.cells)) {
+        const cellData = qdata.cells[ck];
+        const ha = (cellData && typeof cellData === 'object' && !Array.isArray(cellData))
+          ? cellData.hectares : null;
+        if (ha != null && isFinite(Number(ha))) sum += Number(ha);
+      }
+      return sum;
+    };
+
+    const rows = buildHectaresReport(result.rows, cellHa, quarterTotalHa);
+    res.json({ rows });
+  } catch (error) {
+    console.error('Hectares report error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+```
+
+- [ ] **Step 3: Проверить синтаксис**
+
+Run: `node --check server/server.js`
+Expected: без вывода (OK).
+
+- [ ] **Step 4: Smoke — endpoint на пустой сессии отвечает 200 и `{rows:[]}`**
+
+Запустить сервер локально с демо-БД (как обычно поднимается демо) и проверить новую демо-сессию:
+
+Run: `curl -s -c cj.txt http://localhost:3000/api/demo/start -X POST > /dev/null; curl -s -b cj.txt http://localhost:3000/api/report/hectares`
+Expected: `{"rows":[]}` со статусом 200.
+
+(Если локальная демо-БД не поднята — отметить шаг как проверяемый при деплое на VPS; не блокирует коммит, т.к. логика покрыта юнит-тестами Task 1.)
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add server/server.js
+git commit -m "feat(demo): endpoint GET /api/report/hectares"
+```
+
+---
+
+## Task 3: Клиентская вкладка «Выполнение»
+
+**Files:**
+- Modify: `public/js/app.js` (кнопка вкладки ~строка 508; блок `tab-content` ~строка 544; новые методы рядом с `loadDisputed`/`renderDisputed` ~строка 1858)
+
+- [ ] **Step 1: Добавить кнопку вкладки**
+
+В блоке `<div class="tabs">` (после кнопки «Спорные», строка 508) добавить:
+
+```js
+          <button class="tab-button" onclick="app.switchTab(event, 'perf'); app.loadPerformance()">Выполнение</button>
+```
+
+- [ ] **Step 2: Добавить контейнер вкладки**
+
+После блока `<div class="tab-content" id="disputed-tab"> ... </div>` (после строки 544) вставить:
+
+```js
+        <div class="tab-content" id="perf-tab">
+          <button onclick="app.loadPerformance()">Обновить</button>
+          <div id="perf-filters"></div>
+          <div id="perf-list" class="logs-list"></div>
+        </div>
+```
+
+- [ ] **Step 3: Инициализировать состояние фильтров в конструкторе**
+
+В конструкторе класса (где задаются прочие поля состояния, напр. рядом с `this.disputed = []`) добавить:
+
+```js
+    this.perfRows = [];
+    this.perfQuarters = new Set();   // выбранные кварталы (пусто трактуем как «все»)
+    this.perfWorkTypes = new Set();  // выбранные виды работ
+```
+
+- [ ] **Step 4: Добавить методы загрузки и отрисовки**
+
+Рядом с `renderDisputed()` (после строки 1896) добавить:
+
+```js
+  // Загружает отчёт «Выполнение» (га сделано/осталось) и рисует с фильтрами.
+  async loadPerformance() {
+    const list = document.getElementById('perf-list');
+    if (!list) return;
+    try {
+      const r = await this.apiFetch('/api/report/hectares');
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        list.innerHTML = `<p style="color:#c00;padding:10px;">${this.escapeHtml(data.error || 'Ошибка')}</p>`;
+        return;
+      }
+      this.perfRows = data.rows || [];
+      // По умолчанию выбраны ВСЕ кварталы и виды работ из ответа.
+      this.perfQuarters = new Set(this.perfRows.map(x => String(x.quarter)));
+      this.perfWorkTypes = new Set(this.perfRows.map(x => x.work_type));
+      this.renderPerformance();
+    } catch (e) {
+      list.innerHTML = `<p style="color:#c00;padding:10px;">${this.escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  // Переключает чип-фильтр (квартал или вид работ) и перерисовывает.
+  togglePerfFilter(kind, value) {
+    const set = kind === 'q' ? this.perfQuarters : this.perfWorkTypes;
+    if (set.has(value)) set.delete(value); else set.add(value);
+    this.renderPerformance();
+  }
+
+  renderPerformance() {
+    const filters = document.getElementById('perf-filters');
+    const list = document.getElementById('perf-list');
+    if (!filters || !list) return;
+
+    if (!this.perfRows || this.perfRows.length === 0) {
+      filters.innerHTML = '';
+      list.innerHTML = '<p style="color:#888;padding:10px;">Пока ничего не записано — заполни журнал, и тут появятся гектары.</p>';
+      return;
+    }
+
+    // Чипы фильтров: уникальные виды работ и кварталы.
+    const allQ = [...new Set(this.perfRows.map(x => String(x.quarter)))]
+      .sort((a, b) => (parseInt(a, 10) || 0) - (parseInt(b, 10) || 0));
+    const allWt = [...new Set(this.perfRows.map(x => x.work_type))]
+      .sort((a, b) => a.localeCompare(b, 'ru'));
+    const chip = (kind, val, on) =>
+      `<button class="filter-chip ${on ? 'active' : ''}" onclick="app.togglePerfFilter('${kind}', '${this.escapeAttr(val)}')">${this.escapeHtml(val)}</button>`;
+    filters.innerHTML =
+      `<div class="perf-filter-row"><span class="filter-label">Виды работ:</span>` +
+      allWt.map(wt => chip('wt', wt, this.perfWorkTypes.has(wt))).join('') + `</div>` +
+      `<div class="perf-filter-row"><span class="filter-label">Кварталы:</span>` +
+      allQ.map(q => chip('q', q, this.perfQuarters.has(q))).join('') + `</div>`;
+
+    const shown = this.perfRows.filter(x =>
+      this.perfWorkTypes.has(x.work_type) && this.perfQuarters.has(String(x.quarter)));
+    if (shown.length === 0) {
+      list.innerHTML = '<p style="color:#888;padding:10px;">Ничего не выбрано в фильтрах.</p>';
+      return;
+    }
+    list.innerHTML = shown.map(x => `
+      <div class="log-group">
+        <div><b>${this.escapeHtml(x.work_type)}</b> · Кв.${this.escapeHtml(String(x.quarter))}</div>
+        <div style="margin-top:4px;">Сделано: <b>${x.done_ha}</b> га · Осталось: <b>${x.remaining_ha}</b> га</div>
+      </div>
+    `).join('');
+  }
+```
+
+- [ ] **Step 5: Добавить `escapeAttr`, если её нет**
+
+Проверить наличие `escapeAttr` в `app.js` (`grep escapeAttr public/js/app.js`). Если метода нет — добавить рядом с `escapeHtml`:
+
+```js
+  // Экранирует значение для подстановки в одинарные кавычки onclick-атрибута.
+  escapeAttr(s) {
+    return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  }
+```
+
+(Если `escapeHtml` уже даёт безопасный результат и значения — только цифры кварталов и имена видов работ, можно переиспользовать существующий механизм; но виды работ вводятся пользователем, поэтому экранирование атрибута обязательно.)
+
+- [ ] **Step 6: Добавить минимальные стили чипов**
+
+В `public/css/styles.css` (в конец) добавить, если классов нет:
+
+```css
+.perf-filter-row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:6px 0; }
+.filter-label { color:#888; font-size:13px; margin-right:4px; }
+.filter-chip { padding:4px 10px; border:1px solid #ccc; border-radius:14px; background:#fff; font-size:13px; cursor:pointer; }
+.filter-chip.active { background:#2e7d32; color:#fff; border-color:#2e7d32; }
+```
+
+- [ ] **Step 7: Проверить синтаксис JS**
+
+Run: `node --check public/js/app.js`
+Expected: без вывода (OK).
+
+- [ ] **Step 8: Ручная проверка в браузере**
+
+Поднять демо локально (или дождаться деплоя). Записать в журнал несколько рядов по 1-2 видам работ в одном квартале → открыть вкладку «Выполнение»:
+- появились строки вид работ × квартал с «Сделано»/«Осталось»;
+- чипы фильтров кварталов и видов работ переключаются, список реагирует;
+- разделить один ряд между двумя рабочими и убедиться, что площадь не задвоилась;
+- на пустой сессии — дружелюбная заглушка.
+
+- [ ] **Step 9: Коммит**
+
+```bash
+git add public/js/app.js public/css/styles.css
+git commit -m "feat(demo): вкладка Выполнение (сделано/осталось в га) + фильтры"
+```
+
+---
+
+## Финал
+
+- [ ] Холистическое ревью всей ветки (spec + code-quality) согласно subagent-driven-development.
+- [ ] Прогон: `node --test` (весь набор) + `node --check` ключевых файлов.
+- [ ] **Деплой — отдельным шагом, после живой проверки Натали:** merge ветки в `demo-five-modes`, push в приватный SourceCraft, на VPS (Beget, `/opt/pomoshnik-demo`, pm2 `pomoshnik-demo`) `git pull && pm2 restart`, smoke `/api/report/hectares` → 200. Боевого НЕ касаемся.
+
+## Self-Review (заполняется автором плана)
+
+- **Покрытие спеки:** §3 правила расчёта → Task 1 (дедуп, накопление, осталось≥0, пропуск клетки без площади) + Task 2 (источник данных, quarterTotalHa). §4 архитектура → Task 1/2/3. §2 вкладка/фильтры/две цифры → Task 3. §5 крайние случаи → Task 1 (try/catch клетки, clamp 0), Task 2 (quarterTotalHa=0 при отсутствии), Task 3 (заглушка пустой сессии). §6 тесты → Task 1 + smoke Task 2.
+- **Типы согласованы:** агрегатор возвращает `{estate, work_type, quarter, done_ha, total_ha, remaining_ha}` — те же поля читает клиент (`x.work_type`, `x.quarter`, `x.done_ha`, `x.remaining_ha`) и отдаёт endpoint (`{rows}`).
+- **Без плейсхолдеров:** код приведён полностью во всех шагах, изменяющих код.
