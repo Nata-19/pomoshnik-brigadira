@@ -1497,12 +1497,10 @@ app.post('/api/disputed/:id/resolve', authOrDemo, async (req, res) => {
     const d = rec.rows[0];
 
     // Кусты ряда из инвентаризации текущего режима (для rows_only = 0).
-    let invForParser, parserToUse;
+    let parserToUse;
     if (DEMO_MODE) {
-      invForParser = await demo.getDemoInventory(pool, req.demo_session_id);
-      parserToUse = new DataParser(invForParser);
+      parserToUse = new DataParser(await demo.getDemoInventory(pool, req.demo_session_id));
     } else {
-      invForParser = inventory;
       parserToUse = parser;
     }
     let rowBushes = 0;
