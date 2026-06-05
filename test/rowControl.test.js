@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { splitBushes, classifyRows } = require('../server/rowControl');
+const { splitBushes, classifyRows, removeRowFromRecord, distributeBushes } = require('../server/rowControl');
 
 test('splitBushes делит поровну, чётное', () => {
   assert.deepStrictEqual(splitBushes(100, null), { first: 50, second: 50 });
@@ -66,4 +66,63 @@ test('classifyRows: смешанный набор', () => {
   assert.deepStrictEqual(r.free, [1]);
   assert.strictEqual(r.sameDay[0].row, 5);
   assert.strictEqual(r.otherDay[0].row, 7);
+});
+
+test('removeRowFromRecord: убирает ряд из середины и вычитает его кусты', () => {
+  const out = removeRowFromRecord('1,2,3,4,5', 685, 3, 140);
+  assert.strictEqual(out.rows, '1,2,4,5');
+  assert.strictEqual(out.bushes, 545);
+  assert.strictEqual(out.deleted, false);
+  assert.strictEqual(out.found, true);
+});
+
+test('removeRowFromRecord: последний ряд → запись помечается на удаление', () => {
+  const out = removeRowFromRecord('7', 130, 7, 130);
+  assert.strictEqual(out.rows, null);
+  assert.strictEqual(out.bushes, 0);
+  assert.strictEqual(out.deleted, true);
+  assert.strictEqual(out.found, true);
+});
+
+test('removeRowFromRecord: кусты не уходят ниже нуля', () => {
+  const out = removeRowFromRecord('1,2', 50, 2, 200);
+  assert.strictEqual(out.rows, '1');
+  assert.strictEqual(out.bushes, 0);
+  assert.strictEqual(out.deleted, false);
+});
+
+test('removeRowFromRecord: ряда нет в записи → ничего не меняем', () => {
+  const out = removeRowFromRecord('1,2,3', 300, 9, 100);
+  assert.strictEqual(out.rows, '1,2,3');
+  assert.strictEqual(out.bushes, 300);
+  assert.strictEqual(out.deleted, false);
+  assert.strictEqual(out.found, false);
+});
+
+test('removeRowFromRecord: режим rows_only (кусты 0) остаётся 0', () => {
+  const out = removeRowFromRecord('4,5,6', 0, 5, 0);
+  assert.strictEqual(out.rows, '4,6');
+  assert.strictEqual(out.bushes, 0);
+  assert.strictEqual(out.deleted, false);
+});
+
+test('distributeBushes: поровну без остатка', () => {
+  assert.deepStrictEqual(distributeBushes(100, 2), [50, 50]);
+});
+
+test('distributeBushes: остаток уходит первым', () => {
+  assert.deepStrictEqual(distributeBushes(101, 2), [51, 50]);
+  assert.deepStrictEqual(distributeBushes(100, 3), [34, 33, 33]);
+});
+
+test('distributeBushes: один получатель — все кусты', () => {
+  assert.deepStrictEqual(distributeBushes(140, 1), [140]);
+});
+
+test('distributeBushes: ноль кустов', () => {
+  assert.deepStrictEqual(distributeBushes(0, 3), [0, 0, 0]);
+});
+
+test('distributeBushes: ноль получателей — пустой массив', () => {
+  assert.deepStrictEqual(distributeBushes(100, 0), []);
 });
