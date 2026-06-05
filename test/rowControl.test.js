@@ -89,6 +89,7 @@ test('removeRowFromRecord: кусты не уходят ниже нуля', () =
   assert.strictEqual(out.rows, '1');
   assert.strictEqual(out.bushes, 0);
   assert.strictEqual(out.deleted, false);
+  assert.strictEqual(out.found, true);
 });
 
 test('removeRowFromRecord: ряда нет в записи → ничего не меняем', () => {
@@ -125,4 +126,9 @@ test('distributeBushes: ноль кустов', () => {
 
 test('distributeBushes: ноль получателей — пустой массив', () => {
   assert.deepStrictEqual(distributeBushes(100, 0), []);
+});
+
+test('distributeBushes: некорректный total → пустой массив', () => {
+  assert.deepStrictEqual(distributeBushes(-5, 2), []);
+  assert.deepStrictEqual(distributeBushes(1.5, 2), []);
 });

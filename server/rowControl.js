@@ -79,6 +79,7 @@ function removeRowFromRecord(rowsCsv, currentBushes, removedRow, removedRowBushe
 // n <= 0 → пустой массив.
 function distributeBushes(total, n) {
   if (!Number.isInteger(n) || n <= 0) return [];
+  if (!Number.isInteger(total) || total < 0) return [];
   const base = Math.floor(total / n);
   let rem = total - base * n;
   const out = [];
