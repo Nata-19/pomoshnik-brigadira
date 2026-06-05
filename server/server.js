@@ -1028,6 +1028,54 @@ function rowOwner(req) {
     : { col: 'brigadier_id', val: req.brigadier.id };
 }
 
+// Снимает ряд rowNum из записи logId (того же владельца) и пишет результат в БД:
+// если рядов не осталось — удаляет запись, иначе обновляет rows + bushes.
+// removedRowBushes — кусты ряда по инвентаризации (rows_only → 0). Возвращает true,
+// если запись найдена и обработана, иначе false.
+async function applyRowRemoval(ownerCol, ownerVal, logId, rowNum, removedRowBushes) {
+  const rec = await pool.query(
+    `SELECT rows, bushes FROM work_logs WHERE id = $1 AND ${ownerCol} = $2`,
+    [logId, ownerVal]
+  );
+  if (rec.rowCount === 0) return false;
+  const out = rowControl.removeRowFromRecord(
+    rec.rows[0].rows, rec.rows[0].bushes, rowNum, removedRowBushes
+  );
+  if (out.deleted) {
+    await pool.query(
+      `DELETE FROM work_logs WHERE id = $1 AND ${ownerCol} = $2`,
+      [logId, ownerVal]
+    );
+  } else {
+    await pool.query(
+      `UPDATE work_logs SET rows = $1, bushes = $2 WHERE id = $3 AND ${ownerCol} = $4`,
+      [out.rows, out.bushes, logId, ownerVal]
+    );
+  }
+  return true;
+}
+
+// Заносит ряд в disputed_rows с учётом владельца (демо — по сессии, прод — по бригадиру).
+async function insertDisputed(d, owner, req) {
+  if (DEMO_MODE) {
+    await pool.query(
+      `INSERT INTO disputed_rows
+        (estate_id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date, demo_session_id, brigadier_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [d.estate, d.quarter, d.cell, d.work_type, d.row_num, d.measure_mode,
+       d.claimed_by, d.claimed_date, req.demo_session_id, 0]
+    );
+    return;
+  }
+  await pool.query(
+    `INSERT INTO disputed_rows
+      (estate_id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date, brigadier_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [d.estate, d.quarter, d.cell, d.work_type, d.row_num, d.measure_mode,
+     d.claimed_by, d.claimed_date, req.brigadier.id]
+  );
+}
+
 // --- Этап 2: создание одной записи журнала (структурированный ввод) ---
 app.post('/api/logs', authOrDemo, async (req, res) => {
   try {
@@ -1297,10 +1345,42 @@ app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
       return ins.rows[0].id;
     };
 
-    if (action === 'assign') {
-      // «Другой день»: записать ряд целиком на текущего рабочего, первого не трогаем.
-      const id = await insertLog(employee.trim(), rowBushes);
-      return res.json({ success: true, id });
+    if (action === 'reassign' || action === 'postpone') {
+      // «Разные дни»: оба варианта снимают ряд с первого рабочего (firstLogId),
+      // отличаются тем, что делать дальше — записать второму или отложить в спорные.
+      const fid = parseInt(firstLogId, 10);
+      if (!Number.isInteger(fid)) {
+        return res.status(400).json({ error: 'Не указана запись первого рабочего' });
+      }
+      // Запись первого должна принадлежать тому же владельцу и тому же разрезу
+      // (без фильтра по дате — у первого она в ДРУГОЙ день).
+      const firstRec = await pool.query(
+        `SELECT employee, date FROM work_logs
+         WHERE id = $1 AND ${owner.col} = $2 AND estate_id = $3
+           AND quarter = $4 AND cell = $5 AND work_type = $6`,
+        [fid, owner.val, estate, String(quarter), String(cell), work_type.trim()]
+      );
+      if (firstRec.rowCount === 0) {
+        return res.status(404).json({ error: 'Запись первого рабочего не найдена' });
+      }
+
+      if (action === 'reassign') {
+        if (firstRec.rows[0].employee === employee.trim()) {
+          return res.status(400).json({ error: 'Ряд уже записан на этого рабочего' });
+        }
+        await applyRowRemoval(owner.col, owner.val, fid, rowNum, rowBushes);
+        const id = await insertLog(employee.trim(), rowBushes);
+        return res.json({ success: true, id });
+      }
+
+      // postpone: ряд уходит в «Спорные», снимается с первого, второму не пишется.
+      await insertDisputed({
+        estate, quarter: String(quarter), cell: String(cell),
+        work_type: work_type.trim(), row_num: rowNum, measure_mode,
+        claimed_by: firstRec.rows[0].employee, claimed_date: firstRec.rows[0].date,
+      }, owner, req);
+      await applyRowRemoval(owner.col, owner.val, fid, rowNum, rowBushes);
+      return res.json({ success: true });
     }
 
     if (action === 'split') {
