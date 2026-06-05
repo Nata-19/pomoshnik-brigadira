@@ -1532,7 +1532,7 @@ app.post('/api/disputed/:id/resolve', authOrDemo, async (req, res) => {
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ error: 'Некорректный id' });
     }
-    const { action, assignments } = req.body;
+    const { action, assignments, date } = req.body;
     if (!['assign-actual', 'return-first'].includes(action)) {
       return res.status(400).json({ error: 'Неизвестное действие' });
     }
@@ -1601,8 +1601,11 @@ app.post('/api/disputed/:id/resolve', authOrDemo, async (req, res) => {
     }
 
     // Записываем долю каждому рабочему — одна плашка на рабочего в клетке (слияние).
+    // Дата разбора — «сегодня» (клиент шлёт date); если не пришла/некорректна —
+    // запасной вариант дата заявки.
+    const resolveDate = (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) ? date : d.claimed_date;
     const ctx = {
-      date: d.claimed_date, estate: d.estate_id, quarter: d.quarter,
+      date: resolveDate, estate: d.estate_id, quarter: d.quarter,
       cell: d.cell, work_type: d.work_type, measure_mode: d.measure_mode,
     };
     for (const a of toInsert) {
