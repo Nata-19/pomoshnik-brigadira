@@ -148,6 +148,23 @@ const getSecret = () => SESSION_SECRET;
         PRIMARY KEY (brigadier_id, date, employee_id)
       )
     `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS disputed_rows (
+        id SERIAL PRIMARY KEY,
+        brigadier_id INTEGER,
+        demo_session_id TEXT,
+        estate_id TEXT NOT NULL,
+        quarter TEXT NOT NULL,
+        cell TEXT NOT NULL,
+        work_type TEXT NOT NULL,
+        row_num INTEGER NOT NULL,
+        measure_mode TEXT NOT NULL DEFAULT 'rows_bushes',
+        claimed_by TEXT NOT NULL,
+        claimed_date TEXT NOT NULL,
+        note TEXT,
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
     // Заполняем общий список видов работ основными — один раз, если он пуст.
     const wtCount = await pool.query('SELECT COUNT(*)::int AS n FROM work_types');
     if (wtCount.rows[0].n === 0) {
