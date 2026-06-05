@@ -505,6 +505,7 @@ class BrigadeAssistant {
           <button class="tab-button active" onclick="app.switchTab(event, 'input')">Ввод данных</button>
           <button class="tab-button" onclick="app.switchTab(event, 'report')">Отчет за период</button>
           <button class="tab-button" onclick="app.switchTab(event, 'logs'); app.loadLogs()">Журнал</button>
+          <button class="tab-button" onclick="app.switchTab(event, 'disputed'); app.loadDisputed()">Спорные</button>
           ${this.me && this.me.is_admin ? `<button class="tab-button" onclick="app.switchTab(event, 'admin'); app.loadBrigadiers()">Админ</button>` : ''}
         </div>
 
@@ -535,6 +536,11 @@ class BrigadeAssistant {
           <button onclick="app.loadLogs()">Обновить</button>
 
           <div id="logs-list" class="logs-list"></div>
+        </div>
+
+        <div class="tab-content" id="disputed-tab">
+          <button onclick="app.loadDisputed()">Обновить</button>
+          <div id="disputed-list" class="logs-list"></div>
         </div>
 
         ${this.me && this.me.is_admin ? `
@@ -1917,6 +1923,159 @@ class BrigadeAssistant {
       }
     } catch (e) {
       alert('Ошибка: ' + e.message);
+    }
+  }
+
+  async loadDisputed() {
+    const list = document.getElementById('disputed-list');
+    if (!list) return;
+    if (!this.estate) {
+      list.innerHTML = '<p style="color:#888;padding:10px;">Сначала выбери хозяйство</p>';
+      return;
+    }
+    try {
+      const r = await this.apiFetch('/api/disputed?estate=' + encodeURIComponent(this.estate));
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        list.innerHTML = `<p style="color:#c00;padding:10px;">${this.escapeHtml(data.error || 'Ошибка')}</p>`;
+        return;
+      }
+      this.disputed = data.disputed || [];
+      this.renderDisputed();
+    } catch (e) {
+      list.innerHTML = `<p style="color:#c00;padding:10px;">${this.escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  renderDisputed() {
+    const list = document.getElementById('disputed-list');
+    if (!list) return;
+    if (!this.disputed || this.disputed.length === 0) {
+      list.innerHTML = '<p style="color:#888;padding:10px;">Спорных рядов нет</p>';
+      return;
+    }
+    list.innerHTML = this.disputed.map((d) => `
+      <div class="log-group">
+        <div><b>Ряд ${d.row_num}</b> · Кв.${this.escapeHtml(String(d.quarter))} клетка ${this.escapeHtml(String(d.cell))} · ${this.escapeHtml(d.work_type)}</div>
+        <div style="color:#888;font-size:13px;">Заявлял ${this.escapeHtml(d.claimed_by)} (${this.escapeHtml(d.claimed_date)})</div>
+        <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+          <button onclick="app.openDisputedAssign(${d.id})">Записать делавшим</button>
+          <button onclick="app.resolveDisputed(${d.id}, 'return-first')">Вернуть ${this.escapeHtml(d.claimed_by)}</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  // Открывает модалку выбора рабочих (одного или нескольких) с долями кустов,
+  // затем отправляет разбор. Деление — выбор бригадира: отметил несколько → кусты
+  // делятся (пустые доли = поровну, остаток первым).
+  async openDisputedAssign(id) {
+    const d = (this.disputed || []).find((x) => x.id === id);
+    if (!d) return;
+    const assignments = await this.showDisputedAssignModal(d);
+    if (!assignments) return;
+    await this.resolveDisputed(id, 'assign-actual', assignments);
+  }
+
+  // Возвращает Promise: массив [{employee, bushes|null}] (≥1) или null при отмене.
+  showDisputedAssignModal(d) {
+    return new Promise((resolve) => {
+      const askShare = d.measure_mode === 'rows_bushes';
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      const box = document.createElement('div');
+      box.className = 'modal-box';
+
+      const title = document.createElement('div');
+      title.className = 'modal-title';
+      title.textContent = `Ряд ${d.row_num} — кто делал?`;
+      box.appendChild(title);
+
+      const hint = document.createElement('div');
+      hint.className = 'modal-text';
+      hint.textContent = askShare
+        ? 'Отметь рабочих. Если несколько — кусты делятся поровну; можно задать долю вручную.'
+        : 'Отметь рабочих, которые делали ряд.';
+      box.appendChild(hint);
+
+      const rows = [];
+      (this.employees || []).forEach((e) => {
+        const rowEl = document.createElement('label');
+        rowEl.style.display = 'flex';
+        rowEl.style.alignItems = 'center';
+        rowEl.style.gap = '8px';
+        rowEl.style.margin = '6px 0';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = e.name;
+        nameSpan.style.flex = '1';
+        rowEl.appendChild(cb);
+        rowEl.appendChild(nameSpan);
+        let shareInput = null;
+        if (askShare) {
+          shareInput = document.createElement('input');
+          shareInput.className = 'modal-input';
+          shareInput.inputMode = 'numeric';
+          shareInput.placeholder = 'кусты';
+          shareInput.style.width = '90px';
+          shareInput.style.margin = '0';
+          rowEl.appendChild(shareInput);
+        }
+        box.appendChild(rowEl);
+        rows.push({ name: e.name, cb, shareInput });
+      });
+
+      const actions = document.createElement('div');
+      actions.className = 'modal-actions';
+      const primary = document.createElement('button');
+      primary.className = 'modal-primary';
+      primary.textContent = 'Записать';
+      const cancel = document.createElement('button');
+      cancel.className = 'modal-cancel';
+      cancel.textContent = 'Отмена';
+      actions.appendChild(primary);
+      actions.appendChild(cancel);
+      box.appendChild(actions);
+
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+
+      const close = (result) => { overlay.remove(); resolve(result); };
+      primary.addEventListener('click', () => {
+        const chosen = rows.filter((r) => r.cb.checked).map((r) => {
+          let bushes = null;
+          if (r.shareInput && r.shareInput.value.trim() !== '') {
+            const n = parseInt(r.shareInput.value, 10);
+            if (Number.isInteger(n) && n >= 0) bushes = n;
+          }
+          return { employee: r.name, bushes };
+        });
+        if (chosen.length === 0) return; // нечего записывать — ждём выбора
+        close(chosen);
+      });
+      cancel.addEventListener('click', () => close(null));
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+    });
+  }
+
+  async resolveDisputed(id, action, assignments) {
+    const body = { action };
+    if (action === 'assign-actual') body.assignments = assignments || [];
+    try {
+      const r = await this.apiFetch('/api/disputed/' + id + '/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        await this.showInfoModal(data.error || 'Не удалось разобрать ряд');
+        return;
+      }
+      await this.loadDisputed();
+    } catch (e) {
+      await this.showInfoModal(e.message);
     }
   }
 
