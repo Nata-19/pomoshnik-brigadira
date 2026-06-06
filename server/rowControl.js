@@ -45,33 +45,74 @@ function classifyRows(requestedRows, occupied, today) {
   return { free, sameDay, otherDay };
 }
 
-// Убирает ряд removedRow из CSV-списка рядов записи и пересчитывает кусты.
-// rowsCsv — строка вида '1,2,3'; currentBushes — текущие кусты записи;
-// removedRowBushes — кусты снимаемого ряда по инвентаризации (для rows_only = 0).
-// Возвращает { rows, bushes, deleted, found }:
-//   found=false  → ряда в записи не было, ничего не меняем;
-//   deleted=true → рядов не осталось, запись надо удалить (rows=null, bushes=0);
-//   иначе        → rows = новый CSV, bushes = max(currentBushes - removedRowBushes, 0).
-// Кусты вычитаем (а не пересчитываем по инвентаризации), чтобы сохранить ранее
-// заданные вручную доли — так же, как делает деление (split).
-function removeRowFromRecord(rowsCsv, currentBushes, removedRow, removedRowBushes) {
+// Убирает ряд removedRow из записи: правит CSV рядов, JSON весов и кусты.
+// rowBushes — кусты ВСЕГО ряда по инвентаризации (rows_only → 0); вычитаем
+// долю снимаемого рабочего = вес_ряда * rowBushes (вес отсутствует → 1).
+// Возвращает { rows, weights, bushes, deleted, found }.
+function removeRowFromRecord(rowsCsv, weightsText, currentBushes, removedRow, rowBushes) {
   const nums = String(rowsCsv || '')
-    .split(',')
-    .map((s) => parseInt(s, 10))
-    .filter((n) => Number.isInteger(n));
+    .split(',').map((s) => parseInt(s, 10)).filter((n) => Number.isInteger(n));
+  const weights = parseRowWeights(weightsText);
   if (!nums.includes(removedRow)) {
-    return { rows: nums.join(','), bushes: currentBushes, deleted: false, found: false };
+    return { rows: nums.join(','), weights: serializeRowWeights(weights), bushes: currentBushes, deleted: false, found: false };
   }
+  const w = (typeof weights[removedRow] === 'number' && isFinite(weights[removedRow])) ? weights[removedRow] : 1;
   const remaining = nums.filter((n) => n !== removedRow);
   if (remaining.length === 0) {
-    return { rows: null, bushes: 0, deleted: true, found: true };
+    return { rows: null, weights: null, bushes: 0, deleted: true, found: true };
   }
+  const newWeights = {};
+  for (const n of remaining) if (weights[n] !== undefined) newWeights[n] = weights[n];
+  const subtract = Math.round(w * (Number(rowBushes) || 0));
   return {
     rows: remaining.join(','),
-    bushes: Math.max(currentBushes - removedRowBushes, 0),
-    deleted: false,
-    found: true,
+    weights: serializeRowWeights(newWeights),
+    bushes: Math.max(currentBushes - subtract, 0),
+    deleted: false, found: true,
   };
+}
+
+// --- Веса рядов (дробный учёт) ---
+function parseRowWeights(text) {
+  if (!text) return {};
+  try {
+    const o = JSON.parse(text);
+    return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {};
+  } catch { return {}; }
+}
+
+function serializeRowWeights(obj) {
+  return JSON.stringify(obj || {});
+}
+
+// Вес записи для подсчёта рядов: сумма весов; ряд без веса считается как 1.
+function weightOfRecord(rowsCsv, weightsText) {
+  const nums = String(rowsCsv || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const w = parseRowWeights(weightsText);
+  let sum = 0;
+  for (const n of nums) sum += (typeof w[n] === 'number' && isFinite(w[n])) ? w[n] : 1;
+  return sum;
+}
+
+// Веса по кустам (rows_bushes): доля = кусты/всего. total<=0 → поровну.
+function weightsFromBushes(totalRowBushes, bushesArr) {
+  const n = bushesArr.length;
+  if (!(Number(totalRowBushes) > 0)) return fillWeights(new Array(n).fill(null));
+  return bushesArr.map((b) => (Number(b) || 0) / Number(totalRowBushes));
+}
+
+// Заполняет веса: явные (число) уважаются, пустые (null) делят остаток поровну.
+function fillWeights(arr) {
+  const provided = arr.filter((w) => w !== null && w !== undefined);
+  const explicitSum = provided.reduce((s, w) => s + Number(w), 0);
+  const blanks = arr.filter((w) => w === null || w === undefined).length;
+  const each = blanks > 0 ? Math.max(1 - explicitSum, 0) / blanks : 0;
+  return arr.map((w) => (w === null || w === undefined) ? each : Number(w));
+}
+
+// Показ числа рядов: округление до 2 знаков, без лишних нулей.
+function formatRows(n) {
+  return String(Math.round((Number(n) || 0) * 100) / 100);
 }
 
 // Делит total кустов на n равных долей; остаток раздаётся первым долям по одной.
@@ -90,4 +131,8 @@ function distributeBushes(total, n) {
   return out;
 }
 
-module.exports = { splitBushes, classifyRows, removeRowFromRecord, distributeBushes };
+module.exports = {
+  splitBushes, classifyRows, removeRowFromRecord, distributeBushes,
+  parseRowWeights, serializeRowWeights, weightOfRecord,
+  weightsFromBushes, fillWeights, formatRows,
+};
