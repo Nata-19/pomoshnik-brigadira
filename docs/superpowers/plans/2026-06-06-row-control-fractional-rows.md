@@ -29,12 +29,22 @@
 - Modify: `server/rowControl.js`
 - Test: `test/rowControl.test.js`
 
+- [ ] **Step 0: Обновить существующие тесты `removeRowFromRecord` под новую сигнатуру**
+
+Сигнатура меняется с `(rowsCsv, currentBushes, removedRow, removedRowBushes)` на `(rowsCsv, weightsText, currentBushes, removedRow, rowBushes)`. В уже существующих тестах (в `test/rowControl.test.js`, ~строки 71–96) вставить вторым аргументом `null` (вес отсутствует → трактуется как 1, ожидания не меняются):
+- `removeRowFromRecord('1,2,3,4,5', 685, 3, 140)` → `removeRowFromRecord('1,2,3,4,5', null, 685, 3, 140)`
+- `removeRowFromRecord('7', 130, 7, 130)` → `removeRowFromRecord('7', null, 130, 7, 130)`
+- `removeRowFromRecord('1,2', 50, 2, 200)` → `removeRowFromRecord('1,2', null, 50, 2, 200)`
+- `removeRowFromRecord('1,2,3', 300, 9, 100)` → `removeRowFromRecord('1,2,3', null, 300, 9, 100)`
+
 - [ ] **Step 1: Дописать тесты** (добавить в конец `test/rowControl.test.js`)
+
+`removeRowFromRecord` уже импортирован сверху (строка 3) — НЕ объявлять повторно. Снизу импортируем только новые функции:
 
 ```js
 const {
   parseRowWeights, serializeRowWeights, weightOfRecord,
-  weightsFromBushes, fillWeights, formatRows, removeRowFromRecord,
+  weightsFromBushes, fillWeights, formatRows,
 } = require('../server/rowControl');
 
 test('parse/serialize round-trip и мусор', () => {
@@ -438,12 +448,15 @@ git commit -m "feat(rows): row_weights в applyRowRemoval/upsertWorkLog и об�
         toAssign = withBushes.map((a, i) => ({ employee: a.employee, bushes: a.bushes, weight: weights[i] }));
       }
 
-      // Снимаем ряд со всех держателей этого разреза за эту дату.
+      // Снимаем ряд со всех держателей этого разреза — БЕЗ фильтра по дате:
+      // при делении «другой день» запись занявшего лежит на другую дату, а при
+      // повторном делении держателей может быть несколько. id уникален, разрез
+      // (владелец+хозяйство+квартал+клетка+вид работ+режим) ограничивает выборку.
       const holders = await pool.query(
         `SELECT id, rows FROM work_logs
-         WHERE ${owner.col} = $1 AND date = $2 AND estate_id = $3
-           AND quarter = $4 AND cell = $5 AND work_type = $6 AND measure_mode = $7`,
-        [owner.val, date, estate, String(quarter), String(cell), work_type.trim(), measure_mode]
+         WHERE ${owner.col} = $1 AND estate_id = $2
+           AND quarter = $3 AND cell = $4 AND work_type = $5 AND measure_mode = $6`,
+        [owner.val, estate, String(quarter), String(cell), work_type.trim(), measure_mode]
       );
       let strippedAny = false;
       for (const h of holders.rows) {
@@ -698,7 +711,7 @@ git commit -m "feat(rows): отдаём кусты ряда в конфликт�
 ## Task 8: Клиент — подсказка про кусты и доля для «только ряды»
 
 **Files:**
-- Modify: `public/js/app.js` (`showDivideModal` ~1291; вызовы в `resolveSameDay`/`resolveOtherDay` ~1025, 1065; `openDisputedAssign` ~1901)
+- Modify: `public/js/app.js` (`showDivideModal` ~1291; вызовы в `resolveSameDay` ~1025, `resolveOtherDay` ~1065, `openDisputedAssign` ~1276–1283)
 
 - [ ] **Step 1: `showDivideModal` — параметр `rowBushes`, подсказка и доля**
 
@@ -777,7 +790,7 @@ git commit -m "feat(rows): отдаём кусты ряда в конфликт�
     });
 ```
 
-В `openDisputedAssign(id)` (~1901) — передать кусты спорного ряда:
+В `openDisputedAssign(id)` (~1279) — передать кусты спорного ряда:
 
 ```js
     const assignments = await this.showDivideModal({
@@ -822,3 +835,4 @@ git commit -m "feat(rows): подсказка про кусты + поле до�
 - **Покрытие спеки:** §3 модель → Task 2 (колонка) + Task 3/4/5 (запись весов). §4 миграция → Task 2. §5 ядро → Task 1. §6 пути записи → Task 3/4/5. §7 подсказка → Task 7/8. §8 отчёт → Task 6. §9 крайние случаи → Task 1 (fallback even, отсутствие веса=1) + Task 4 (strip-all). §10 тесты → Task 1 + ручные Task 8/9.
 - **Типы согласованы:** `removeRowFromRecord(rowsCsv, weightsText, currentBushes, removedRow, rowBushes)` — одна сигнатура везде (Task 1 опр., Task 3 вызов). `upsertWorkLog(..., bushes, weight)` — опр. Task 3, вызовы Task 4/5 передают `weight`. `weightOfRecord(rows, row_weights)` — Task 1/6. Конфликты несут `rowBushes` (Task 7) → клиент читает `c.rowBushes` (Task 8). Спорные несут `row_bushes` (Task 7) → клиент `d.row_bushes` (Task 8). assignments несут `bushes` (rows_bushes) или `weight` (rows_only) — клиент Task 8, сервер Task 4/5.
 - **Без плейсхолдеров:** код приведён во всех изменяющих шагах.
+- **Принятые ограничения (не баги):** при ручном вводе бригадиром доль (rows_only) с суммой >1 или кустов больше, чем всего в ряду, сумма весов ряда может выйти за 1 — нормализации нет (та же модель, что и сейчас с кустами; ввод на ответственности бригадира). `divide` снимает ряд по разрезу БЕЗ фильтра по дате (иначе ломается «Поделить» для разных дней) — это корректно, т.к. ряд по модели «делается один раз» и не должен висеть на нескольких датах.
