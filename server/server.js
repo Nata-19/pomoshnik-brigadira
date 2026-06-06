@@ -126,6 +126,18 @@ const getSecret = () => SESSION_SECRET;
     await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS hours INTEGER`);
     await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS hectares NUMERIC(8,2)`);
     await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS kilometers NUMERIC(8,2)`);
+    await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS row_weights TEXT`);
+    // Бэкфилл: существующим записям с рядами проставить вес каждого ряда = 1
+    // (каждый ряд как целый). Ничего не удаляем и не меняем в rows/bushes.
+    await pool.query(`
+      UPDATE work_logs
+      SET row_weights = (
+        SELECT jsonb_object_agg(t.r, 1)::text
+        FROM unnest(string_to_array(rows, ',')) AS t(r)
+        WHERE t.r <> ''
+      )
+      WHERE row_weights IS NULL AND rows IS NOT NULL AND rows <> ''
+    `);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS employees (
         id SERIAL PRIMARY KEY,
