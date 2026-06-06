@@ -1937,6 +1937,10 @@ class BrigadeAssistant {
         : 'Отметь рабочих, которые делали ряд.';
       box.appendChild(hint);
 
+      // Список рабочих — в прокручиваемом контейнере, чтобы на телефоне
+      // кнопки действий снизу оставались видны при длинном списке.
+      const listEl = document.createElement('div');
+      listEl.className = 'modal-list';
       const rows = [];
       (this.employees || []).forEach((e) => {
         const rowEl = document.createElement('label');
@@ -1962,9 +1966,10 @@ class BrigadeAssistant {
           shareInput.style.margin = '0';
           rowEl.appendChild(shareInput);
         }
-        box.appendChild(rowEl);
+        listEl.appendChild(rowEl);
         rows.push({ name: e.name, cb, shareInput });
       });
+      box.appendChild(listEl);
 
       const actions = document.createElement('div');
       actions.className = 'modal-actions';
