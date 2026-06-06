@@ -1139,9 +1139,19 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
       const occupied = await getOccupiedRows(owner.col, owner.val, estate, String(quarter), String(cell), work_type.trim());
       const cls = rowControl.classifyRows(rowNums, occupied, date);
 
+      // К каждому конфликту добавляем кусты ряда (для подсказки в окне деления).
+      const withBushes = (arr) => arr.map((c) => {
+        let rb = 0;
+        if (measure_mode === 'rows_bushes') {
+          try { rb = parserToUse.getBushesCount(estate, String(quarter), String(cell), [c.row]); } catch { rb = 0; }
+        }
+        return { ...c, rowBushes: rb };
+      });
+      const conflictsOut = { sameDay: withBushes(cls.sameDay), otherDay: withBushes(cls.otherDay) };
+
       // Все ряды заняты — ничего не сохраняем, отдаём конфликты на разрешение.
       if (cls.free.length === 0 && (cls.sameDay.length || cls.otherDay.length)) {
-        return res.json({ success: false, savedRows: [], conflicts: { sameDay: cls.sameDay, otherDay: cls.otherDay } });
+        return res.json({ success: false, savedRows: [], conflicts: conflictsOut });
       }
 
       // Сохраняем только свободные ряды; конфликтные вернём клиенту.
@@ -1154,7 +1164,7 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
           return res.status(400).json({ error: e.message });
         }
       }
-      req._rowConflicts = { sameDay: cls.sameDay, otherDay: cls.otherDay };
+      req._rowConflicts = conflictsOut;
     }
 
     // Вес каждого введённого ряда = 1 (целый ряд). Для hours/без рядов — null.
@@ -1423,20 +1433,30 @@ app.get('/api/disputed', authOrDemo, async (req, res) => {
     let result;
     if (DEMO_MODE) {
       result = await pool.query(
-        `SELECT id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date
+        `SELECT id, estate_id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date
          FROM disputed_rows WHERE demo_session_id = $1 AND estate_id = $2
          ORDER BY created_at DESC`,
         [req.demo_session_id, estate]
       );
     } else {
       result = await pool.query(
-        `SELECT id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date
+        `SELECT id, estate_id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date
          FROM disputed_rows WHERE brigadier_id = $1 AND estate_id = $2
          ORDER BY created_at DESC`,
         [req.brigadier.id, estate]
       );
     }
-    res.json({ disputed: result.rows });
+    let parserToUse;
+    if (DEMO_MODE) parserToUse = new DataParser(await demo.getDemoInventory(pool, req.demo_session_id));
+    else parserToUse = parser;
+    const disputed = result.rows.map((d) => {
+      let rb = 0;
+      if (d.measure_mode === 'rows_bushes') {
+        try { rb = parserToUse.getBushesCount(d.estate_id, String(d.quarter), String(d.cell), [d.row_num]); } catch { rb = 0; }
+      }
+      return { ...d, row_bushes: rb };
+    });
+    res.json({ disputed });
   } catch (error) {
     console.error('Disputed list error:', error);
     res.status(500).json({ error: error.message });
