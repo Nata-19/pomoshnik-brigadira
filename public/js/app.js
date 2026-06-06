@@ -1026,6 +1026,7 @@ class BrigadeAssistant {
       row: c.row,
       askShare: body.measure_mode === 'rows_bushes',
       preselect: [c.occupant.employee, employee],
+      rowBushes: c.rowBushes || 0,
     });
     if (!assignments) return;
 
@@ -1066,6 +1067,7 @@ class BrigadeAssistant {
         row: c.row,
         askShare: body.measure_mode === 'rows_bushes',
         preselect: [c.occupant.employee, employee],
+        rowBushes: c.rowBushes || 0,
       });
       if (!assignments) return;
       payload.action = 'divide';
@@ -1280,6 +1282,7 @@ class BrigadeAssistant {
       row: d.row_num,
       askShare: d.measure_mode === 'rows_bushes',
       preselect: [],
+      rowBushes: d.row_bushes || 0,
     });
     if (!assignments) return;
     await this.resolveDisputed(id, 'assign-actual', assignments);
@@ -1288,7 +1291,7 @@ class BrigadeAssistant {
   // Окно деления ряда между рабочими: чекбоксы + доли кустов (пусто = поровну).
   // preselect — имена, отмеченные заранее (занявший ряд и текущий рабочий).
   // Возвращает Promise: массив [{employee, bushes|null}] (≥1) или null при отмене.
-  showDivideModal({ row, askShare, preselect = [] }) {
+  showDivideModal({ row, askShare, preselect = [], rowBushes = 0 }) {
     return new Promise((resolve) => {
       if (!this.employees || this.employees.length === 0) {
         this.showInfoModal('Список рабочих не загружен');
@@ -1311,6 +1314,14 @@ class BrigadeAssistant {
         ? 'Отметь рабочих. Если несколько — кусты делятся поровну; можно задать долю вручную.'
         : 'Отметь рабочих, которые делали ряд.';
       box.appendChild(hint);
+
+      if (askShare && rowBushes > 0) {
+        const bhint = document.createElement('div');
+        bhint.className = 'modal-text';
+        bhint.style.marginTop = '-6px';
+        bhint.textContent = `В этом ряду ${rowBushes} кустов.`;
+        box.appendChild(bhint);
+      }
 
       // Список рабочих — в прокручиваемом контейнере, чтобы на телефоне
       // кнопки действий снизу оставались видны при длинном списке.
@@ -1340,6 +1351,14 @@ class BrigadeAssistant {
           shareInput.style.width = '90px';
           shareInput.style.margin = '0';
           rowEl.appendChild(shareInput);
+        } else {
+          shareInput = document.createElement('input');
+          shareInput.className = 'modal-input';
+          shareInput.inputMode = 'decimal';
+          shareInput.placeholder = 'доля';
+          shareInput.style.width = '90px';
+          shareInput.style.margin = '0';
+          rowEl.appendChild(shareInput);
         }
         listEl.appendChild(rowEl);
         rows.push({ name: e.name, cb, shareInput });
@@ -1364,12 +1383,20 @@ class BrigadeAssistant {
       const close = (result) => { overlay.remove(); resolve(result); };
       primary.addEventListener('click', () => {
         const chosen = rows.filter((r) => r.cb.checked).map((r) => {
-          let bushes = null;
-          if (r.shareInput && r.shareInput.value.trim() !== '') {
-            const n = parseInt(r.shareInput.value, 10);
-            if (Number.isInteger(n) && n >= 0) bushes = n;
+          if (askShare) {
+            let bushes = null;
+            if (r.shareInput && r.shareInput.value.trim() !== '') {
+              const n = parseInt(r.shareInput.value, 10);
+              if (Number.isInteger(n) && n >= 0) bushes = n;
+            }
+            return { employee: r.name, bushes };
           }
-          return { employee: r.name, bushes };
+          let weight = null;
+          if (r.shareInput && r.shareInput.value.trim() !== '') {
+            const x = parseFloat(r.shareInput.value.replace(',', '.'));
+            if (isFinite(x) && x >= 0) weight = x;
+          }
+          return { employee: r.name, weight };
         });
         if (chosen.length === 0) return; // нечего записывать — ждём выбора
         close(chosen);
