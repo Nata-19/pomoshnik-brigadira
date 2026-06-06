@@ -1340,38 +1340,27 @@ app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
     }
 
     if (action === 'divide') {
-      // Поделить ряд между НЕСКОЛЬКИМИ рабочими (assignments). Ряд снимается с
-      // первого (firstLogId), кусты ряда (из инвентаря) делятся на отмеченных
-      // (явные доли уважаем, остаток поровну по пустым), каждому — одна плашка.
-      const fid = parseInt(firstLogId, 10);
-      if (!Number.isInteger(fid)) {
-        return res.status(400).json({ error: 'Не указана запись первого рабочего' });
-      }
-      const firstRec = await pool.query(
-        `SELECT employee FROM work_logs
-         WHERE id = $1 AND ${owner.col} = $2 AND estate_id = $3
-           AND quarter = $4 AND cell = $5 AND work_type = $6`,
-        [fid, owner.val, estate, String(quarter), String(cell), work_type.trim()]
-      );
-      if (firstRec.rowCount === 0) {
-        return res.status(404).json({ error: 'Запись первого рабочего не найдена' });
-      }
-
+      // Поделить ряд между НЕСКОЛЬКИМИ рабочими. Ряд снимается со ВСЕХ его
+      // текущих держателей в этом разрезе (это делает повторное деление верным),
+      // затем раздаётся отмеченным. Вес ряда у каждого: rows_bushes — кусты/всего;
+      // rows_only — поровну (или ручная доля). Сумма весов ряда = 1.
       const list = Array.isArray(assignments) ? assignments : [];
       const cleaned = list
         .map((a) => ({
           employee: a && a.employee ? String(a.employee).trim() : '',
-          bushes: (a && a.bushes !== null && a.bushes !== undefined && a.bushes !== '')
-            ? parseInt(a.bushes, 10) : null,
+          bushes: (a && a.bushes !== null && a.bushes !== undefined && a.bushes !== '') ? parseInt(a.bushes, 10) : null,
+          weight: (a && a.weight !== null && a.weight !== undefined && a.weight !== '') ? Number(a.weight) : null,
         }))
         .filter((a) => a.employee);
       if (cleaned.length === 0) {
         return res.status(400).json({ error: 'Выбери хотя бы одного рабочего' });
       }
 
+      // Считаем кусты и веса по режиму.
       let toAssign;
       if (measure_mode !== 'rows_bushes') {
-        toAssign = cleaned.map((a) => ({ employee: a.employee, bushes: 0 }));
+        const weights = rowControl.fillWeights(cleaned.map((a) => a.weight));
+        toAssign = cleaned.map((a, i) => ({ employee: a.employee, bushes: 0, weight: weights[i] }));
       } else {
         for (const a of cleaned) {
           if (a.bushes !== null && (!Number.isInteger(a.bushes) || a.bushes < 0)) {
@@ -1383,19 +1372,38 @@ app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
         const remaining = Math.max(rowBushes - explicitSum, 0);
         const shares = rowControl.distributeBushes(remaining, blanksCount);
         let bi = 0;
-        toAssign = cleaned.map((a) => ({
+        const withBushes = cleaned.map((a) => ({
           employee: a.employee,
           bushes: a.bushes !== null ? a.bushes : shares[bi++],
         }));
+        const weights = rowControl.weightsFromBushes(rowBushes, withBushes.map((a) => a.bushes));
+        toAssign = withBushes.map((a, i) => ({ employee: a.employee, bushes: a.bushes, weight: weights[i] }));
       }
 
-      // Снимаем ряд с первого рабочего, затем раздаём доли отмеченным.
-      const removed = await applyRowRemoval(owner.col, owner.val, fid, rowNum, rowBushes);
-      if (!removed) {
-        return res.status(409).json({ error: 'Ряд уже снят с первого рабочего' });
+      // Снимаем ряд со всех держателей этого разреза — БЕЗ фильтра по дате:
+      // при делении «другой день» запись занявшего лежит на другую дату, а при
+      // повторном делении держателей может быть несколько. id уникален, разрез
+      // (владелец+хозяйство+квартал+клетка+вид работ+режим) ограничивает выборку.
+      const holders = await pool.query(
+        `SELECT id, rows FROM work_logs
+         WHERE ${owner.col} = $1 AND estate_id = $2
+           AND quarter = $3 AND cell = $4 AND work_type = $5 AND measure_mode = $6`,
+        [owner.val, estate, String(quarter), String(cell), work_type.trim(), measure_mode]
+      );
+      let strippedAny = false;
+      for (const h of holders.rows) {
+        const nums = String(h.rows || '').split(',').map((s) => parseInt(s, 10)).filter((n) => Number.isInteger(n));
+        if (nums.includes(rowNum)) {
+          const ok = await applyRowRemoval(owner.col, owner.val, h.id, rowNum, rowBushes);
+          if (ok) strippedAny = true;
+        }
       }
+      if (!strippedAny) {
+        return res.status(409).json({ error: 'Ряд уже снят' });
+      }
+
       for (const a of toAssign) {
-        await upsertWorkLog(owner.col, owner.val, req, ctx, a.employee, rowNum, a.bushes);
+        await upsertWorkLog(owner.col, owner.val, req, ctx, a.employee, rowNum, a.bushes, a.weight);
       }
       return res.json({ success: true });
     }
