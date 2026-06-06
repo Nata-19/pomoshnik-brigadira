@@ -1051,6 +1051,25 @@ class BrigadeAssistant {
     return '🌳';
   }
 
+  // Сумма «весов рядов» записи (дробный учёт): поделённый ряд = доля.
+  // row_weights — JSON {ряд: вес}; ряд без веса (старые записи) = 1.
+  rowWeightSum(log) {
+    const nums = String(log.rows || '').split(',').map(s => s.trim()).filter(Boolean);
+    let w = {};
+    try {
+      const o = JSON.parse(log.row_weights || '{}');
+      if (o && typeof o === 'object' && !Array.isArray(o)) w = o;
+    } catch {}
+    let sum = 0;
+    for (const n of nums) sum += (typeof w[n] === 'number' && isFinite(w[n])) ? w[n] : 1;
+    return sum;
+  }
+
+  // Показ числа рядов: 2 знака, без лишних нулей (2 / 0.5 / 0.33).
+  fmtRows(n) {
+    return String(Math.round((Number(n) || 0) * 100) / 100);
+  }
+
   // Группировка логов по работнику для Отчёта за период / Всего за день.
   // Возвращает Map: имя работника → массив активностей.
   // Активность = уникальная пара (культура, вид работ, квартал, клетка, режим)
@@ -1081,7 +1100,7 @@ class BrigadeAssistant {
         });
       }
       const a = acts.get(key);
-      a.rowCount += String(log.rows || '').split(',').filter(x => x.trim()).length;
+      a.rowCount += this.rowWeightSum(log);
       a.bushes += Number(log.bushes) || 0;
       a.hours += Number(log.hours) || 0;
       a.hectares += Number(log.hectares) || 0;
@@ -1128,9 +1147,9 @@ class BrigadeAssistant {
         } else if (a.measure_mode === 'kilometers') {
           measure = `${a.kilometers} км`;
         } else if (a.measure_mode === 'rows_bushes') {
-          measure = `${a.rowCount} рядов, ${a.bushes} кустов`;
+          measure = `${this.fmtRows(a.rowCount)} рядов, ${a.bushes} кустов`;
         } else {
-          measure = `${a.rowCount} рядов`;
+          measure = `${this.fmtRows(a.rowCount)} рядов`;
         }
         // В демо estate_id = название культуры. Показываем её в строке
         // чтобы различать Кв.1 яблоня и Кв.1 виноград (одинаковые номера —
@@ -1185,7 +1204,7 @@ class BrigadeAssistant {
         });
       }
       const it = innerMap.get(inKey);
-      it.rowCount += String(log.rows || '').split(',').filter(x => x.trim()).length;
+      it.rowCount += this.rowWeightSum(log);
       it.bushes += Number(log.bushes) || 0;
       it.hours += Number(log.hours) || 0;
     }
@@ -1227,9 +1246,9 @@ class BrigadeAssistant {
         if (r.measure_mode === 'hours') {
           measure = `${r.hours} часов`;
         } else if (r.measure_mode === 'rows_bushes') {
-          measure = `${r.rowCount} рядов, ${r.bushes} кустов`;
+          measure = `${this.fmtRows(r.rowCount)} рядов, ${r.bushes} кустов`;
         } else {
-          measure = `${r.rowCount} рядов`;
+          measure = `${this.fmtRows(r.rowCount)} рядов`;
         }
         return `<div class="report-line">${this.escapeHtml(r.employee)} — ${measure}${place}</div>`;
       }).join('');
@@ -1237,7 +1256,7 @@ class BrigadeAssistant {
     }).join('');
     const totals = this._manualTotals(logs);
     const parts = [];
-    if (totals.rowCount > 0) parts.push(`${totals.rowCount} рядов`);
+    if (totals.rowCount > 0) parts.push(`${this.fmtRows(totals.rowCount)} рядов`);
     if (totals.bushes > 0) parts.push(`${totals.bushes} кустов`);
     if (totals.hours > 0) parts.push(`${totals.hours} часов`);
     const totalLine = parts.length > 0
@@ -1273,7 +1292,7 @@ class BrigadeAssistant {
     const m = this._manualTotals(manualLogs);
     const e = this._mechTotals(mechLogs);
     const manualParts = [];
-    if (m.rowCount > 0) manualParts.push(`${m.rowCount} рядов`);
+    if (m.rowCount > 0) manualParts.push(`${this.fmtRows(m.rowCount)} рядов`);
     if (m.bushes > 0) manualParts.push(`${m.bushes} кустов`);
     if (m.hours > 0) manualParts.push(`${m.hours} часов`);
     const mechParts = [];
@@ -1290,7 +1309,7 @@ class BrigadeAssistant {
   _manualTotals(logs) {
     const t = { rowCount: 0, bushes: 0, hours: 0 };
     for (const log of logs || []) {
-      t.rowCount += String(log.rows || '').split(',').filter(x => x.trim()).length;
+      t.rowCount += this.rowWeightSum(log);
       t.bushes += Number(log.bushes) || 0;
       if (log.measure_mode === 'hours') t.hours += Number(log.hours) || 0;
     }
@@ -1309,15 +1328,58 @@ class BrigadeAssistant {
     return t;
   }
 
-  // Плашка «Всего за день» на Вводе данных.
-  // Группировка такая же как в Отчёте за период, только за один день — по запросу
-  // Натали: «всё что бригадир ввёл во Вводе данных» с разрезом работник → вид работ.
+  // Плашка «Всего за день» на Вводе данных — сводка по КВАРТАЛУ+КЛЕТКЕ
+  // (а не по людям): сколько за день сделано в каждой клетке. Ряды дробные
+  // (поделённый ряд = доля), плюс кусты/часы/га/км по режимам.
   renderDailyTotalsHtml() {
     if (!this.entries || this.entries.length === 0) {
       return '<p class="chips-empty">Пока пусто.</p>';
     }
-    const byEmp = this.groupLogsByEmployee(this.entries);
-    return this.renderEmployeeReportHtml(byEmp);
+    const byCell = new Map();
+    for (const log of this.entries) {
+      const key = [log.estate_id || '', log.quarter || '', log.cell || ''].join('||');
+      if (!byCell.has(key)) {
+        byCell.set(key, {
+          estate_id: log.estate_id || '', quarter: log.quarter || '', cell: log.cell || '',
+          rowCount: 0, bushes: 0, hours: 0, hectares: 0, kilometers: 0,
+          hasRows: false, hasBushes: false,
+        });
+      }
+      const c = byCell.get(key);
+      if (log.measure_mode === 'hours') {
+        c.hours += Number(log.hours) || 0;
+      } else if (log.measure_mode === 'hectares') {
+        c.hectares += Number(log.hectares) || 0;
+        c.rowCount += this.rowWeightSum(log); c.hasRows = true;
+      } else if (log.measure_mode === 'kilometers') {
+        c.kilometers += Number(log.kilometers) || 0;
+      } else {
+        c.rowCount += this.rowWeightSum(log); c.hasRows = true;
+        if (log.measure_mode === 'rows_bushes') { c.bushes += Number(log.bushes) || 0; c.hasBushes = true; }
+      }
+    }
+    const cells = Array.from(byCell.values()).sort((a, b) => {
+      const be = (a.estate_id || '').localeCompare(b.estate_id || '', 'ru');
+      if (be !== 0) return be;
+      const aq = Number(a.quarter) || 0, bq = Number(b.quarter) || 0;
+      if (aq !== bq) return aq - bq;
+      return (Number(a.cell) || 0) - (Number(b.cell) || 0);
+    });
+    const lines = cells.map(c => {
+      const place = (c.quarter || c.cell)
+        ? `Кв.${this.escapeHtml(c.quarter)}${c.cell ? ', клет.' + this.escapeHtml(this.formatRange(c.cell)) : ''}`
+        : 'без клетки';
+      const culture = (this.config.demoMode && c.estate_id)
+        ? `${this.cultureEmoji(c.estate_id)} ${this.escapeHtml(c.estate_id)} · ` : '';
+      const parts = [];
+      if (c.hasRows) parts.push(`${this.fmtRows(c.rowCount)} рядов`);
+      if (c.hasBushes) parts.push(`${c.bushes} кустов`);
+      if (c.hours > 0) parts.push(`${c.hours} часов`);
+      if (c.hectares > 0) parts.push(`${Math.round(c.hectares * 100) / 100} га`);
+      if (c.kilometers > 0) parts.push(`${Math.round(c.kilometers * 100) / 100} км`);
+      return `<div class="report-emp-act">${culture}${place} — ${parts.join(', ')}</div>`;
+    }).join('');
+    return `<div class="report-emp-block">${lines}</div>`;
   }
 
   // HTML карточек записей за выбранную дату.
@@ -1335,8 +1397,8 @@ class BrigadeAssistant {
       } else if (log.measure_mode === 'kilometers') {
         measure = `${log.kilometers != null ? log.kilometers : 0} км`;
       } else {
-        const rowCount = String(log.rows || '').split(',').filter(x => x.trim()).length;
-        measure = `${rowCount} рядов`;
+        const rowCount = this.rowWeightSum(log);
+        measure = `${this.fmtRows(rowCount)} рядов`;
         if (log.measure_mode === 'rows_bushes') measure += ` · ${log.bushes} кустов`;
       }
       const place = (!log.quarter)
