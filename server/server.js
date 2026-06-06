@@ -1585,14 +1585,14 @@ app.get('/api/logs', authOrDemo, async (req, res) => {
           return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
         }
         result = await pool.query(
-          `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, created_at
+          `SELECT id, date, estate_id, quarter, cell, employee, rows, row_weights, bushes, work_type, measure_mode, hours, created_at
            FROM work_logs WHERE date = $1 AND estate_id = $2 AND demo_session_id = $3
            ORDER BY created_at DESC`,
           [date, estate, req.demo_session_id]
         );
       } else if (from && to) {
         result = await pool.query(
-          `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, created_at
+          `SELECT id, date, estate_id, quarter, cell, employee, rows, row_weights, bushes, work_type, measure_mode, hours, created_at
            FROM work_logs WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND demo_session_id = $4
            ORDER BY date DESC, created_at DESC`,
           [from, to, estate, req.demo_session_id]
@@ -1606,14 +1606,14 @@ app.get('/api/logs', authOrDemo, async (req, res) => {
           return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
         }
         result = await pool.query(
-          `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, created_at
+          `SELECT id, date, estate_id, quarter, cell, employee, rows, row_weights, bushes, work_type, measure_mode, hours, created_at
            FROM work_logs WHERE date = $1 AND estate_id = $2 AND brigadier_id = $3
            ORDER BY created_at DESC`,
           [date, estate, req.brigadier.id]
         );
       } else if (from && to) {
         result = await pool.query(
-          `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, created_at
+          `SELECT id, date, estate_id, quarter, cell, employee, rows, row_weights, bushes, work_type, measure_mode, hours, created_at
            FROM work_logs WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND brigadier_id = $4
            ORDER BY date DESC, created_at DESC`,
           [from, to, estate, req.brigadier.id]
