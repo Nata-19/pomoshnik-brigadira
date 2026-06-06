@@ -794,6 +794,20 @@ button:active {
     max-width: 360px;
     width: 100%;
     box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Прокручиваемый список внутри модалки (напр. рабочие при делении ряда).
+   Занимает свободную высоту; заголовок сверху и кнопки снизу остаются видны. */
+.modal-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    margin: 0 -4px;
+    padding: 0 4px;
 }
 
 .modal-title {
@@ -825,6 +839,10 @@ button:active {
     gap: 10px;
     justify-content: flex-end;
     flex-wrap: wrap;
+    flex: 0 0 auto;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid #eee;
 }
 
 .modal-actions button {
