@@ -1658,7 +1658,7 @@ app.get('/api/report', authOrDemo, async (req, res) => {
     let result;
     if (DEMO_MODE) {
       result = await pool.query(
-        `SELECT date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours
+        `SELECT date, estate_id, quarter, cell, employee, rows, row_weights, bushes, work_type, measure_mode, hours
          FROM work_logs
          WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND demo_session_id = $4
          ORDER BY employee, work_type, date`,
@@ -1666,7 +1666,7 @@ app.get('/api/report', authOrDemo, async (req, res) => {
       );
     } else {
       result = await pool.query(
-        `SELECT date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours
+        `SELECT date, estate_id, quarter, cell, employee, rows, row_weights, bushes, work_type, measure_mode, hours
          FROM work_logs
          WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND brigadier_id = $4
          ORDER BY employee, work_type, date`,
@@ -1689,11 +1689,10 @@ app.get('/api/report', authOrDemo, async (req, res) => {
       byEmp[r.employee][wt].push(r);
     }
 
-    const rowCountOf = (r) => String(r.rows || '').split(',').filter(x => x.trim()).length;
     const newSlot = () => ({ rows: 0, bushes: 0, hours: 0, hasRows: false, hasBushes: false, hasHours: false });
     const unitText = (s) => {
       const p = [];
-      if (s.hasRows) p.push(`${s.rows} рядов`);
+      if (s.hasRows) p.push(`${rowControl.formatRows(s.rows)} рядов`);
       if (s.hasBushes) p.push(`${s.bushes} кустов`);
       if (s.hasHours) p.push(`${s.hours} часов`);
       return p.join(', ');
@@ -1703,7 +1702,7 @@ app.get('/api/report', authOrDemo, async (req, res) => {
         slot.hours += r.hours || 0;
         slot.hasHours = true;
       } else {
-        slot.rows += rowCountOf(r);
+        slot.rows += rowControl.weightOfRecord(r.rows, r.row_weights);
         slot.hasRows = true;
         if (r.measure_mode === 'rows_bushes') {
           slot.bushes += r.bushes || 0;
