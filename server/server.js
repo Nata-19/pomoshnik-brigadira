@@ -124,6 +124,18 @@ const getSecret = () => SESSION_SECRET;
     await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS work_type TEXT NOT NULL DEFAULT ''`);
     await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS measure_mode TEXT NOT NULL DEFAULT 'rows_bushes'`);
     await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS hours INTEGER`);
+    await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS row_weights TEXT`);
+    // Бэкфилл: существующим записям с рядами проставить вес каждого ряда = 1
+    // (каждый ряд как целый). Ничего не удаляем и не меняем в rows/bushes.
+    await pool.query(`
+      UPDATE work_logs
+      SET row_weights = (
+        SELECT jsonb_object_agg(t.r, 1)::text
+        FROM unnest(string_to_array(rows, ',')) AS t(r)
+        WHERE t.r <> ''
+      )
+      WHERE row_weights IS NULL AND rows IS NOT NULL AND rows <> ''
+    `);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS employees (
         id SERIAL PRIMARY KEY,
@@ -984,25 +996,22 @@ function rowOwner(req) {
 // если рядов не осталось — удаляет запись, иначе обновляет rows + bushes.
 // removedRowBushes — кусты ряда по инвентаризации (rows_only → 0). Возвращает true,
 // если запись найдена и обработана, иначе false.
-async function applyRowRemoval(ownerCol, ownerVal, logId, rowNum, removedRowBushes) {
+async function applyRowRemoval(ownerCol, ownerVal, logId, rowNum, rowBushes) {
   const rec = await pool.query(
-    `SELECT rows, bushes FROM work_logs WHERE id = $1 AND ${ownerCol} = $2`,
+    `SELECT rows, row_weights, bushes FROM work_logs WHERE id = $1 AND ${ownerCol} = $2`,
     [logId, ownerVal]
   );
   if (rec.rowCount === 0) return false;
   const out = rowControl.removeRowFromRecord(
-    rec.rows[0].rows, rec.rows[0].bushes, rowNum, removedRowBushes
+    rec.rows[0].rows, rec.rows[0].row_weights, rec.rows[0].bushes, rowNum, rowBushes
   );
   if (!out.found) return false;
   if (out.deleted) {
-    await pool.query(
-      `DELETE FROM work_logs WHERE id = $1 AND ${ownerCol} = $2`,
-      [logId, ownerVal]
-    );
+    await pool.query(`DELETE FROM work_logs WHERE id = $1 AND ${ownerCol} = $2`, [logId, ownerVal]);
   } else {
     await pool.query(
-      `UPDATE work_logs SET rows = $1, bushes = $2 WHERE id = $3 AND ${ownerCol} = $4`,
-      [out.rows, out.bushes, logId, ownerVal]
+      `UPDATE work_logs SET rows = $1, row_weights = $2, bushes = $3 WHERE id = $4 AND ${ownerCol} = $5`,
+      [out.rows, out.weights, out.bushes, logId, ownerVal]
     );
   }
   return true;
@@ -1034,9 +1043,9 @@ async function insertDisputed(d, owner, req) {
 // разрезе и дате — ряд добавляется к ней и кусты прибавляются; иначе создаётся
 // новая запись на один ряд. Демо/прод по DEMO_MODE.
 // ctx: { date, estate, quarter, cell, work_type, measure_mode }.
-async function upsertWorkLog(ownerCol, ownerVal, req, ctx, emp, rowNum, bushes) {
+async function upsertWorkLog(ownerCol, ownerVal, req, ctx, emp, rowNum, bushes, weight) {
   const ex = await pool.query(
-    `SELECT id, rows, bushes FROM work_logs
+    `SELECT id, rows, row_weights, bushes FROM work_logs
      WHERE ${ownerCol} = $1 AND date = $2 AND estate_id = $3 AND quarter = $4
        AND cell = $5 AND work_type = $6 AND measure_mode = $7 AND employee = $8
      ORDER BY id LIMIT 1`,
@@ -1047,25 +1056,28 @@ async function upsertWorkLog(ownerCol, ownerVal, req, ctx, emp, rowNum, bushes) 
     const nums = String(rec.rows || '').split(',').map((s) => parseInt(s, 10)).filter((n) => Number.isInteger(n));
     if (!nums.includes(rowNum)) nums.push(rowNum);
     nums.sort((a, b) => a - b);
+    const w = rowControl.parseRowWeights(rec.row_weights);
+    w[rowNum] = weight;
     await pool.query(
-      `UPDATE work_logs SET rows = $1, bushes = $2 WHERE id = $3 AND ${ownerCol} = $4`,
-      [nums.join(','), (rec.bushes || 0) + bushes, rec.id, ownerVal]
+      `UPDATE work_logs SET rows = $1, row_weights = $2, bushes = $3 WHERE id = $4 AND ${ownerCol} = $5`,
+      [nums.join(','), rowControl.serializeRowWeights(w), (rec.bushes || 0) + bushes, rec.id, ownerVal]
     );
     return;
   }
+  const wjson = rowControl.serializeRowWeights({ [rowNum]: weight });
   if (DEMO_MODE) {
     await pool.query(
       `INSERT INTO work_logs
-        (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, demo_session_id, work_type, measure_mode, hours)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-      [ctx.date, ctx.estate, String(ctx.quarter), String(ctx.cell), emp, String(rowNum), bushes, 0, req.demo_session_id, ctx.work_type, ctx.measure_mode, null]
+        (date, estate_id, quarter, cell, employee, rows, row_weights, bushes, brigadier_id, demo_session_id, work_type, measure_mode, hours)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      [ctx.date, ctx.estate, String(ctx.quarter), String(ctx.cell), emp, String(rowNum), wjson, bushes, 0, req.demo_session_id, ctx.work_type, ctx.measure_mode, null]
     );
   } else {
     await pool.query(
       `INSERT INTO work_logs
-        (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, work_type, measure_mode, hours)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-      [ctx.date, ctx.estate, String(ctx.quarter), String(ctx.cell), emp, String(rowNum), bushes, req.brigadier.id, ctx.work_type, ctx.measure_mode, null]
+        (date, estate_id, quarter, cell, employee, rows, row_weights, bushes, brigadier_id, work_type, measure_mode, hours)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [ctx.date, ctx.estate, String(ctx.quarter), String(ctx.cell), emp, String(rowNum), wjson, bushes, req.brigadier.id, ctx.work_type, ctx.measure_mode, null]
     );
   }
 }
@@ -1127,9 +1139,19 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
       const occupied = await getOccupiedRows(owner.col, owner.val, estate, String(quarter), String(cell), work_type.trim());
       const cls = rowControl.classifyRows(rowNums, occupied, date);
 
+      // К каждому конфликту добавляем кусты ряда (для подсказки в окне деления).
+      const withBushes = (arr) => arr.map((c) => {
+        let rb = 0;
+        if (measure_mode === 'rows_bushes') {
+          try { rb = parserToUse.getBushesCount(estate, String(quarter), String(cell), [c.row]); } catch { rb = 0; }
+        }
+        return { ...c, rowBushes: rb };
+      });
+      const conflictsOut = { sameDay: withBushes(cls.sameDay), otherDay: withBushes(cls.otherDay) };
+
       // Все ряды заняты — ничего не сохраняем, отдаём конфликты на разрешение.
       if (cls.free.length === 0 && (cls.sameDay.length || cls.otherDay.length)) {
-        return res.json({ success: false, savedRows: [], conflicts: { sameDay: cls.sameDay, otherDay: cls.otherDay } });
+        return res.json({ success: false, savedRows: [], conflicts: conflictsOut });
       }
 
       // Сохраняем только свободные ряды; конфликтные вернём клиенту.
@@ -1142,7 +1164,15 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
           return res.status(400).json({ error: e.message });
         }
       }
-      req._rowConflicts = { sameDay: cls.sameDay, otherDay: cls.otherDay };
+      req._rowConflicts = conflictsOut;
+    }
+
+    // Вес каждого введённого ряда = 1 (целый ряд). Для hours/без рядов — null.
+    let rowWeightsStr = null;
+    if (rowsStr) {
+      const wobj = {};
+      for (const n of rowsStr.split(',')) if (n.trim()) wobj[n.trim()] = 1;
+      rowWeightsStr = rowControl.serializeRowWeights(wobj);
     }
 
     // Защита от непреднамеренных дублей: если ровно такая же запись была
@@ -1169,11 +1199,11 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
       }
       const ins = await pool.query(
         `INSERT INTO work_logs
-          (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, demo_session_id, work_type, measure_mode, hours)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          (date, estate_id, quarter, cell, employee, rows, row_weights, bushes, brigadier_id, demo_session_id, work_type, measure_mode, hours)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          RETURNING id`,
         [date, estate, quarter ? String(quarter) : '', cell ? String(cell) : '',
-         employee.trim(), rowsStr, bushes, 0, req.demo_session_id,
+         employee.trim(), rowsStr, rowWeightsStr, bushes, 0, req.demo_session_id,
          work_type.trim(), measure_mode, hoursVal]
       );
       return res.json({
@@ -1204,11 +1234,11 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
 
     const ins = await pool.query(
       `INSERT INTO work_logs
-        (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, work_type, measure_mode, hours)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        (date, estate_id, quarter, cell, employee, rows, row_weights, bushes, brigadier_id, work_type, measure_mode, hours)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING id`,
       [date, estate, quarter ? String(quarter) : '', cell ? String(cell) : '',
-       employee.trim(), rowsStr, bushes, req.brigadier.id,
+       employee.trim(), rowsStr, rowWeightsStr, bushes, req.brigadier.id,
        work_type.trim(), measure_mode, hoursVal]
     );
     res.json({
@@ -1302,7 +1332,7 @@ app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
           return res.status(409).json({ error: 'Ряд уже снят с первого рабочего' });
         }
         // Ряд целиком — второму рабочему (одна плашка: слияние с его записью).
-        await upsertWorkLog(owner.col, owner.val, req, ctx, employee.trim(), rowNum, rowBushes);
+        await upsertWorkLog(owner.col, owner.val, req, ctx, employee.trim(), rowNum, rowBushes, 1);
         return res.json({ success: true });
       }
 
@@ -1320,38 +1350,27 @@ app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
     }
 
     if (action === 'divide') {
-      // Поделить ряд между НЕСКОЛЬКИМИ рабочими (assignments). Ряд снимается с
-      // первого (firstLogId), кусты ряда (из инвентаря) делятся на отмеченных
-      // (явные доли уважаем, остаток поровну по пустым), каждому — одна плашка.
-      const fid = parseInt(firstLogId, 10);
-      if (!Number.isInteger(fid)) {
-        return res.status(400).json({ error: 'Не указана запись первого рабочего' });
-      }
-      const firstRec = await pool.query(
-        `SELECT employee FROM work_logs
-         WHERE id = $1 AND ${owner.col} = $2 AND estate_id = $3
-           AND quarter = $4 AND cell = $5 AND work_type = $6`,
-        [fid, owner.val, estate, String(quarter), String(cell), work_type.trim()]
-      );
-      if (firstRec.rowCount === 0) {
-        return res.status(404).json({ error: 'Запись первого рабочего не найдена' });
-      }
-
+      // Поделить ряд между НЕСКОЛЬКИМИ рабочими. Ряд снимается со ВСЕХ его
+      // текущих держателей в этом разрезе (это делает повторное деление верным),
+      // затем раздаётся отмеченным. Вес ряда у каждого: rows_bushes — кусты/всего;
+      // rows_only — поровну (или ручная доля). Сумма весов ряда = 1.
       const list = Array.isArray(assignments) ? assignments : [];
       const cleaned = list
         .map((a) => ({
           employee: a && a.employee ? String(a.employee).trim() : '',
-          bushes: (a && a.bushes !== null && a.bushes !== undefined && a.bushes !== '')
-            ? parseInt(a.bushes, 10) : null,
+          bushes: (a && a.bushes !== null && a.bushes !== undefined && a.bushes !== '') ? parseInt(a.bushes, 10) : null,
+          weight: (a && a.weight !== null && a.weight !== undefined && a.weight !== '') ? Number(a.weight) : null,
         }))
         .filter((a) => a.employee);
       if (cleaned.length === 0) {
         return res.status(400).json({ error: 'Выбери хотя бы одного рабочего' });
       }
 
+      // Считаем кусты и веса по режиму.
       let toAssign;
       if (measure_mode !== 'rows_bushes') {
-        toAssign = cleaned.map((a) => ({ employee: a.employee, bushes: 0 }));
+        const weights = rowControl.fillWeights(cleaned.map((a) => a.weight));
+        toAssign = cleaned.map((a, i) => ({ employee: a.employee, bushes: 0, weight: weights[i] }));
       } else {
         for (const a of cleaned) {
           if (a.bushes !== null && (!Number.isInteger(a.bushes) || a.bushes < 0)) {
@@ -1363,19 +1382,38 @@ app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
         const remaining = Math.max(rowBushes - explicitSum, 0);
         const shares = rowControl.distributeBushes(remaining, blanksCount);
         let bi = 0;
-        toAssign = cleaned.map((a) => ({
+        const withBushes = cleaned.map((a) => ({
           employee: a.employee,
           bushes: a.bushes !== null ? a.bushes : shares[bi++],
         }));
+        const weights = rowControl.weightsFromBushes(rowBushes, withBushes.map((a) => a.bushes));
+        toAssign = withBushes.map((a, i) => ({ employee: a.employee, bushes: a.bushes, weight: weights[i] }));
       }
 
-      // Снимаем ряд с первого рабочего, затем раздаём доли отмеченным.
-      const removed = await applyRowRemoval(owner.col, owner.val, fid, rowNum, rowBushes);
-      if (!removed) {
-        return res.status(409).json({ error: 'Ряд уже снят с первого рабочего' });
+      // Снимаем ряд со всех держателей этого разреза — БЕЗ фильтра по дате:
+      // при делении «другой день» запись занявшего лежит на другую дату, а при
+      // повторном делении держателей может быть несколько. id уникален, разрез
+      // (владелец+хозяйство+квартал+клетка+вид работ+режим) ограничивает выборку.
+      const holders = await pool.query(
+        `SELECT id, rows FROM work_logs
+         WHERE ${owner.col} = $1 AND estate_id = $2
+           AND quarter = $3 AND cell = $4 AND work_type = $5 AND measure_mode = $6`,
+        [owner.val, estate, String(quarter), String(cell), work_type.trim(), measure_mode]
+      );
+      let strippedAny = false;
+      for (const h of holders.rows) {
+        const nums = String(h.rows || '').split(',').map((s) => parseInt(s, 10)).filter((n) => Number.isInteger(n));
+        if (nums.includes(rowNum)) {
+          const ok = await applyRowRemoval(owner.col, owner.val, h.id, rowNum, rowBushes);
+          if (ok) strippedAny = true;
+        }
       }
+      if (!strippedAny) {
+        return res.status(409).json({ error: 'Ряд уже снят' });
+      }
+
       for (const a of toAssign) {
-        await upsertWorkLog(owner.col, owner.val, req, ctx, a.employee, rowNum, a.bushes);
+        await upsertWorkLog(owner.col, owner.val, req, ctx, a.employee, rowNum, a.bushes, a.weight);
       }
       return res.json({ success: true });
     }
@@ -1395,20 +1433,30 @@ app.get('/api/disputed', authOrDemo, async (req, res) => {
     let result;
     if (DEMO_MODE) {
       result = await pool.query(
-        `SELECT id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date
+        `SELECT id, estate_id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date
          FROM disputed_rows WHERE demo_session_id = $1 AND estate_id = $2
          ORDER BY created_at DESC`,
         [req.demo_session_id, estate]
       );
     } else {
       result = await pool.query(
-        `SELECT id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date
+        `SELECT id, estate_id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date
          FROM disputed_rows WHERE brigadier_id = $1 AND estate_id = $2
          ORDER BY created_at DESC`,
         [req.brigadier.id, estate]
       );
     }
-    res.json({ disputed: result.rows });
+    let parserToUse;
+    if (DEMO_MODE) parserToUse = new DataParser(await demo.getDemoInventory(pool, req.demo_session_id));
+    else parserToUse = parser;
+    const disputed = result.rows.map((d) => {
+      let rb = 0;
+      if (d.measure_mode === 'rows_bushes') {
+        try { rb = parserToUse.getBushesCount(d.estate_id, String(d.quarter), String(d.cell), [d.row_num]); } catch { rb = 0; }
+      }
+      return { ...d, row_bushes: rb };
+    });
+    res.json({ disputed });
   } catch (error) {
     console.error('Disputed list error:', error);
     res.status(500).json({ error: error.message });
@@ -1461,37 +1509,39 @@ app.post('/api/disputed/:id/resolve', authOrDemo, async (req, res) => {
     // Формируем список (рабочий, кусты) для вставки.
     let toInsert = [];
     if (action === 'return-first') {
-      toInsert = [{ employee: d.claimed_by, bushes: rowBushes }];
+      toInsert = [{ employee: d.claimed_by, bushes: rowBushes, weight: 1 }];
     } else {
       const list = Array.isArray(assignments) ? assignments : [];
       const cleaned = list
         .map((a) => ({
           employee: a && a.employee ? String(a.employee).trim() : '',
-          bushes: (a && a.bushes !== null && a.bushes !== undefined && a.bushes !== '')
-            ? parseInt(a.bushes, 10) : null,
+          bushes: (a && a.bushes !== null && a.bushes !== undefined && a.bushes !== '') ? parseInt(a.bushes, 10) : null,
+          weight: (a && a.weight !== null && a.weight !== undefined && a.weight !== '') ? Number(a.weight) : null,
         }))
         .filter((a) => a.employee);
       if (cleaned.length === 0) {
         return res.status(400).json({ error: 'Выбери хотя бы одного рабочего' });
       }
       if (d.measure_mode !== 'rows_bushes') {
-        toInsert = cleaned.map((a) => ({ employee: a.employee, bushes: 0 }));
+        const weights = rowControl.fillWeights(cleaned.map((a) => a.weight));
+        toInsert = cleaned.map((a, i) => ({ employee: a.employee, bushes: 0, weight: weights[i] }));
       } else {
         for (const a of cleaned) {
           if (a.bushes !== null && (!Number.isInteger(a.bushes) || a.bushes < 0)) {
             return res.status(400).json({ error: 'Кусты должны быть неотрицательным числом' });
           }
         }
-        // Явные доли уважаем, остаток раздаём поровну по пустым.
         const explicitSum = cleaned.reduce((s, a) => s + (a.bushes !== null ? a.bushes : 0), 0);
         const blanksCount = cleaned.filter((a) => a.bushes === null).length;
         const remaining = Math.max(rowBushes - explicitSum, 0);
         const shares = rowControl.distributeBushes(remaining, blanksCount);
         let bi = 0;
-        toInsert = cleaned.map((a) => ({
+        const withBushes = cleaned.map((a) => ({
           employee: a.employee,
           bushes: a.bushes !== null ? a.bushes : shares[bi++],
         }));
+        const weights = rowControl.weightsFromBushes(rowBushes, withBushes.map((a) => a.bushes));
+        toInsert = withBushes.map((a, i) => ({ employee: a.employee, bushes: a.bushes, weight: weights[i] }));
       }
     }
 
@@ -1504,7 +1554,7 @@ app.post('/api/disputed/:id/resolve', authOrDemo, async (req, res) => {
       cell: d.cell, work_type: d.work_type, measure_mode: d.measure_mode,
     };
     for (const a of toInsert) {
-      await upsertWorkLog(owner.col, owner.val, req, ctx, a.employee, d.row_num, a.bushes);
+      await upsertWorkLog(owner.col, owner.val, req, ctx, a.employee, d.row_num, a.bushes, a.weight);
     }
 
     await pool.query(
@@ -1535,14 +1585,14 @@ app.get('/api/logs', authOrDemo, async (req, res) => {
           return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
         }
         result = await pool.query(
-          `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, created_at
+          `SELECT id, date, estate_id, quarter, cell, employee, rows, row_weights, bushes, work_type, measure_mode, hours, created_at
            FROM work_logs WHERE date = $1 AND estate_id = $2 AND demo_session_id = $3
            ORDER BY created_at DESC`,
           [date, estate, req.demo_session_id]
         );
       } else if (from && to) {
         result = await pool.query(
-          `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, created_at
+          `SELECT id, date, estate_id, quarter, cell, employee, rows, row_weights, bushes, work_type, measure_mode, hours, created_at
            FROM work_logs WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND demo_session_id = $4
            ORDER BY date DESC, created_at DESC`,
           [from, to, estate, req.demo_session_id]
@@ -1556,14 +1606,14 @@ app.get('/api/logs', authOrDemo, async (req, res) => {
           return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
         }
         result = await pool.query(
-          `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, created_at
+          `SELECT id, date, estate_id, quarter, cell, employee, rows, row_weights, bushes, work_type, measure_mode, hours, created_at
            FROM work_logs WHERE date = $1 AND estate_id = $2 AND brigadier_id = $3
            ORDER BY created_at DESC`,
           [date, estate, req.brigadier.id]
         );
       } else if (from && to) {
         result = await pool.query(
-          `SELECT id, date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours, created_at
+          `SELECT id, date, estate_id, quarter, cell, employee, rows, row_weights, bushes, work_type, measure_mode, hours, created_at
            FROM work_logs WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND brigadier_id = $4
            ORDER BY date DESC, created_at DESC`,
           [from, to, estate, req.brigadier.id]
@@ -1628,7 +1678,7 @@ app.get('/api/report', authOrDemo, async (req, res) => {
     let result;
     if (DEMO_MODE) {
       result = await pool.query(
-        `SELECT date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours
+        `SELECT date, estate_id, quarter, cell, employee, rows, row_weights, bushes, work_type, measure_mode, hours
          FROM work_logs
          WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND demo_session_id = $4
          ORDER BY employee, work_type, date`,
@@ -1636,7 +1686,7 @@ app.get('/api/report', authOrDemo, async (req, res) => {
       );
     } else {
       result = await pool.query(
-        `SELECT date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hours
+        `SELECT date, estate_id, quarter, cell, employee, rows, row_weights, bushes, work_type, measure_mode, hours
          FROM work_logs
          WHERE date >= $1 AND date <= $2 AND estate_id = $3 AND brigadier_id = $4
          ORDER BY employee, work_type, date`,
@@ -1659,11 +1709,10 @@ app.get('/api/report', authOrDemo, async (req, res) => {
       byEmp[r.employee][wt].push(r);
     }
 
-    const rowCountOf = (r) => String(r.rows || '').split(',').filter(x => x.trim()).length;
     const newSlot = () => ({ rows: 0, bushes: 0, hours: 0, hasRows: false, hasBushes: false, hasHours: false });
     const unitText = (s) => {
       const p = [];
-      if (s.hasRows) p.push(`${s.rows} рядов`);
+      if (s.hasRows) p.push(`${rowControl.formatRows(s.rows)} рядов`);
       if (s.hasBushes) p.push(`${s.bushes} кустов`);
       if (s.hasHours) p.push(`${s.hours} часов`);
       return p.join(', ');
@@ -1673,7 +1722,7 @@ app.get('/api/report', authOrDemo, async (req, res) => {
         slot.hours += r.hours || 0;
         slot.hasHours = true;
       } else {
-        slot.rows += rowCountOf(r);
+        slot.rows += rowControl.weightOfRecord(r.rows, r.row_weights);
         slot.hasRows = true;
         if (r.measure_mode === 'rows_bushes') {
           slot.bushes += r.bushes || 0;

@@ -69,7 +69,7 @@ test('classifyRows: смешанный набор', () => {
 });
 
 test('removeRowFromRecord: убирает ряд из середины и вычитает его кусты', () => {
-  const out = removeRowFromRecord('1,2,3,4,5', 685, 3, 140);
+  const out = removeRowFromRecord('1,2,3,4,5', null, 685, 3, 140);
   assert.strictEqual(out.rows, '1,2,4,5');
   assert.strictEqual(out.bushes, 545);
   assert.strictEqual(out.deleted, false);
@@ -77,7 +77,7 @@ test('removeRowFromRecord: убирает ряд из середины и выч
 });
 
 test('removeRowFromRecord: последний ряд → запись помечается на удаление', () => {
-  const out = removeRowFromRecord('7', 130, 7, 130);
+  const out = removeRowFromRecord('7', null, 130, 7, 130);
   assert.strictEqual(out.rows, null);
   assert.strictEqual(out.bushes, 0);
   assert.strictEqual(out.deleted, true);
@@ -85,7 +85,7 @@ test('removeRowFromRecord: последний ряд → запись помеч
 });
 
 test('removeRowFromRecord: кусты не уходят ниже нуля', () => {
-  const out = removeRowFromRecord('1,2', 50, 2, 200);
+  const out = removeRowFromRecord('1,2', null, 50, 2, 200);
   assert.strictEqual(out.rows, '1');
   assert.strictEqual(out.bushes, 0);
   assert.strictEqual(out.deleted, false);
@@ -93,7 +93,7 @@ test('removeRowFromRecord: кусты не уходят ниже нуля', () =
 });
 
 test('removeRowFromRecord: ряда нет в записи → ничего не меняем', () => {
-  const out = removeRowFromRecord('1,2,3', 300, 9, 100);
+  const out = removeRowFromRecord('1,2,3', null, 300, 9, 100);
   assert.strictEqual(out.rows, '1,2,3');
   assert.strictEqual(out.bushes, 300);
   assert.strictEqual(out.deleted, false);
@@ -101,7 +101,7 @@ test('removeRowFromRecord: ряда нет в записи → ничего не
 });
 
 test('removeRowFromRecord: режим rows_only (кусты 0) остаётся 0', () => {
-  const out = removeRowFromRecord('4,5,6', 0, 5, 0);
+  const out = removeRowFromRecord('4,5,6', null, 0, 5, 0);
   assert.strictEqual(out.rows, '4,6');
   assert.strictEqual(out.bushes, 0);
   assert.strictEqual(out.deleted, false);
@@ -131,4 +131,79 @@ test('distributeBushes: ноль получателей — пустой мас�
 test('distributeBushes: некорректный total → пустой массив', () => {
   assert.deepStrictEqual(distributeBushes(-5, 2), []);
   assert.deepStrictEqual(distributeBushes(1.5, 2), []);
+});
+
+const {
+  parseRowWeights, serializeRowWeights, weightOfRecord,
+  weightsFromBushes, fillWeights, formatRows,
+} = require('../server/rowControl');
+
+test('parse/serialize round-trip и мусор', () => {
+  assert.deepStrictEqual(parseRowWeights('{"1":1,"2":0.5}'), { '1': 1, '2': 0.5 });
+  assert.deepStrictEqual(parseRowWeights(''), {});
+  assert.deepStrictEqual(parseRowWeights('не json'), {});
+  assert.deepStrictEqual(parseRowWeights('[1,2]'), {});
+  assert.strictEqual(serializeRowWeights({ '1': 1 }), '{"1":1}');
+});
+
+test('weightOfRecord: нет весов → считаем по числу рядов (по 1)', () => {
+  assert.strictEqual(weightOfRecord('1,2,3', null), 3);
+  assert.strictEqual(weightOfRecord('1,2,3', ''), 3);
+});
+
+test('weightOfRecord: смесь целых и долей суммируется точно', () => {
+  assert.strictEqual(weightOfRecord('1,2,5', '{"1":1,"2":1,"5":0.5}'), 2.5);
+  assert.strictEqual(weightOfRecord('1,2', '{"1":0.5}'), 1.5);
+});
+
+test('weightsFromBushes: 100 кустов 25/75 → 0.25/0.75', () => {
+  assert.deepStrictEqual(weightsFromBushes(100, [25, 75]), [0.25, 0.75]);
+});
+
+test('weightsFromBushes: total<=0 → поровну', () => {
+  assert.deepStrictEqual(weightsFromBushes(0, [0, 0]), [0.5, 0.5]);
+});
+
+test('fillWeights: все пустые → поровну', () => {
+  assert.deepStrictEqual(fillWeights([null, null]), [0.5, 0.5]);
+  const three = fillWeights([null, null, null]);
+  assert.ok(Math.abs(three.reduce((s, w) => s + w, 0) - 1) < 1e-9);
+});
+
+test('fillWeights: явные уважаются, остаток поровну по пустым', () => {
+  assert.deepStrictEqual(fillWeights([0.5, null, null]), [0.5, 0.25, 0.25]);
+});
+
+test('formatRows: 2 знака без лишних нулей', () => {
+  assert.strictEqual(formatRows(2), '2');
+  assert.strictEqual(formatRows(0.5), '0.5');
+  assert.strictEqual(formatRows(1 / 3), '0.33');
+  assert.strictEqual(formatRows(0.999999), '1');
+});
+
+test('removeRowFromRecord: учитывает вес при вычете кустов', () => {
+  const out = removeRowFromRecord('1,5', '{"1":1,"5":0.5}', 130, 5, 100);
+  assert.strictEqual(out.found, true);
+  assert.strictEqual(out.deleted, false);
+  assert.strictEqual(out.rows, '1');
+  assert.strictEqual(out.bushes, 80);
+  assert.deepStrictEqual(JSON.parse(out.weights), { '1': 1 });
+});
+
+test('removeRowFromRecord: последний ряд → запись на удаление', () => {
+  const out = removeRowFromRecord('5', '{"5":0.5}', 50, 5, 100);
+  assert.strictEqual(out.deleted, true);
+  assert.strictEqual(out.rows, null);
+  assert.strictEqual(out.weights, null);
+});
+
+test('removeRowFromRecord: ряда нет → found=false', () => {
+  const out = removeRowFromRecord('1,2', '{"1":1,"2":1}', 50, 9, 100);
+  assert.strictEqual(out.found, false);
+});
+
+test('removeRowFromRecord: старая запись без весов → вес ряда = 1', () => {
+  const out = removeRowFromRecord('1,2', null, 80, 2, 30);
+  assert.strictEqual(out.bushes, 50);
+  assert.strictEqual(out.found, true);
 });

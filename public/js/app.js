@@ -664,6 +664,26 @@ class BrigadeAssistant {
   // Группировка логов по работнику для Отчёта за период.
   // Возвращает Map: имя работника → массив активностей.
   // Каждая активность = уникальная пара (вид работ, квартал, клетка, режим) с суммированными цифрами.
+
+  // Сумма «весов рядов» записи (дробный учёт): поделённый ряд = доля.
+  // row_weights — JSON {ряд: вес}; ряд без веса (старые записи) = 1.
+  rowWeightSum(log) {
+    const nums = String(log.rows || '').split(',').map(s => s.trim()).filter(Boolean);
+    let w = {};
+    try {
+      const o = JSON.parse(log.row_weights || '{}');
+      if (o && typeof o === 'object' && !Array.isArray(o)) w = o;
+    } catch {}
+    let sum = 0;
+    for (const n of nums) sum += (typeof w[n] === 'number' && isFinite(w[n])) ? w[n] : 1;
+    return sum;
+  }
+
+  // Показ числа рядов: 2 знака, без лишних нулей (2 / 0.5 / 0.33).
+  fmtRows(n) {
+    return String(Math.round((Number(n) || 0) * 100) / 100);
+  }
+
   groupLogsByEmployee(logs) {
     const byEmp = new Map();
     if (!logs || logs.length === 0) return byEmp;
@@ -686,7 +706,7 @@ class BrigadeAssistant {
         });
       }
       const a = acts.get(key);
-      a.rowCount += String(log.rows || '').split(',').filter(x => x.trim()).length;
+      a.rowCount += this.rowWeightSum(log);
       a.bushes += Number(log.bushes) || 0;
       a.hours += Number(log.hours) || 0;
       a.hectares += Number(log.hectares) || 0;
@@ -732,9 +752,9 @@ class BrigadeAssistant {
         } else if (a.measure_mode === 'kilometers') {
           measure = `${a.kilometers} км`;
         } else if (a.measure_mode === 'rows_bushes') {
-          measure = `${a.rowCount} рядов, ${a.bushes} кустов`;
+          measure = `${this.fmtRows(a.rowCount)} рядов, ${a.bushes} кустов`;
         } else {
-          measure = `${a.rowCount} рядов`;
+          measure = `${this.fmtRows(a.rowCount)} рядов`;
         }
         const wtPlace = `${this.escapeHtml(a.work_type || '—')}${place ? ' · ' + place : ''}`;
         return `<div class="report-emp-act">${wtPlace} — ${measure}</div>`;
@@ -755,7 +775,7 @@ class BrigadeAssistant {
     const byWt = new Map();
     for (const log of this.entries) {
       if (log.measure_mode !== 'rows_bushes' && log.measure_mode !== 'rows_only') continue;
-      const rowCount = String(log.rows || '').split(',').filter(x => x.trim()).length;
+      const rowCount = this.rowWeightSum(log);
       const bushes = Number(log.bushes) || 0;
       const wt = log.work_type || '—';
       if (!byWt.has(wt)) byWt.set(wt, new Map());
@@ -773,7 +793,7 @@ class BrigadeAssistant {
     for (const [wt, byCell] of byWt) {
       const cellLines = [];
       for (const [cellKey, agg] of byCell) {
-        cellLines.push(`<div class="total-cell-row"><span>${this.escapeHtml(cellKey)}</span><span>${agg.rows} рядов, ${agg.bushes} кустов</span></div>`);
+        cellLines.push(`<div class="total-cell-row"><span>${this.escapeHtml(cellKey)}</span><span>${this.fmtRows(agg.rows)} рядов, ${agg.bushes} кустов</span></div>`);
       }
       wtBlocks.push(`<div class="total-wt-block"><div class="total-wt-head">${this.escapeHtml(wt)}</div>${cellLines.join('')}</div>`);
     }
@@ -790,8 +810,8 @@ class BrigadeAssistant {
       if (log.measure_mode === 'hours') {
         measure = `${log.hours} часов`;
       } else {
-        const rowCount = String(log.rows || '').split(',').filter(x => x.trim()).length;
-        measure = `${rowCount} рядов`;
+        const rowCount = this.rowWeightSum(log);
+        measure = `${this.fmtRows(rowCount)} рядов`;
         if (log.measure_mode === 'rows_bushes') measure += ` · ${log.bushes} кустов`;
       }
       const place = log.measure_mode === 'hours' && !log.quarter
@@ -1026,6 +1046,7 @@ class BrigadeAssistant {
       row: c.row,
       askShare: body.measure_mode === 'rows_bushes',
       preselect: [c.occupant.employee, employee],
+      rowBushes: c.rowBushes || 0,
     });
     if (!assignments) return;
 
@@ -1066,6 +1087,7 @@ class BrigadeAssistant {
         row: c.row,
         askShare: body.measure_mode === 'rows_bushes',
         preselect: [c.occupant.employee, employee],
+        rowBushes: c.rowBushes || 0,
       });
       if (!assignments) return;
       payload.action = 'divide';
@@ -1280,6 +1302,7 @@ class BrigadeAssistant {
       row: d.row_num,
       askShare: d.measure_mode === 'rows_bushes',
       preselect: [],
+      rowBushes: d.row_bushes || 0,
     });
     if (!assignments) return;
     await this.resolveDisputed(id, 'assign-actual', assignments);
@@ -1288,7 +1311,7 @@ class BrigadeAssistant {
   // Окно деления ряда между рабочими: чекбоксы + доли кустов (пусто = поровну).
   // preselect — имена, отмеченные заранее (занявший ряд и текущий рабочий).
   // Возвращает Promise: массив [{employee, bushes|null}] (≥1) или null при отмене.
-  showDivideModal({ row, askShare, preselect = [] }) {
+  showDivideModal({ row, askShare, preselect = [], rowBushes = 0 }) {
     return new Promise((resolve) => {
       if (!this.employees || this.employees.length === 0) {
         this.showInfoModal('Список рабочих не загружен');
@@ -1311,6 +1334,14 @@ class BrigadeAssistant {
         ? 'Отметь рабочих. Если несколько — кусты делятся поровну; можно задать долю вручную.'
         : 'Отметь рабочих, которые делали ряд.';
       box.appendChild(hint);
+
+      if (askShare && rowBushes > 0) {
+        const bhint = document.createElement('div');
+        bhint.className = 'modal-text';
+        bhint.style.marginTop = '-6px';
+        bhint.textContent = `В этом ряду ${rowBushes} кустов.`;
+        box.appendChild(bhint);
+      }
 
       // Список рабочих — в прокручиваемом контейнере, чтобы на телефоне
       // кнопки действий снизу оставались видны при длинном списке.
@@ -1340,6 +1371,14 @@ class BrigadeAssistant {
           shareInput.style.width = '90px';
           shareInput.style.margin = '0';
           rowEl.appendChild(shareInput);
+        } else {
+          shareInput = document.createElement('input');
+          shareInput.className = 'modal-input';
+          shareInput.inputMode = 'decimal';
+          shareInput.placeholder = 'доля';
+          shareInput.style.width = '90px';
+          shareInput.style.margin = '0';
+          rowEl.appendChild(shareInput);
         }
         listEl.appendChild(rowEl);
         rows.push({ name: e.name, cb, shareInput });
@@ -1364,12 +1403,20 @@ class BrigadeAssistant {
       const close = (result) => { overlay.remove(); resolve(result); };
       primary.addEventListener('click', () => {
         const chosen = rows.filter((r) => r.cb.checked).map((r) => {
-          let bushes = null;
-          if (r.shareInput && r.shareInput.value.trim() !== '') {
-            const n = parseInt(r.shareInput.value, 10);
-            if (Number.isInteger(n) && n >= 0) bushes = n;
+          if (askShare) {
+            let bushes = null;
+            if (r.shareInput && r.shareInput.value.trim() !== '') {
+              const n = parseInt(r.shareInput.value, 10);
+              if (Number.isInteger(n) && n >= 0) bushes = n;
+            }
+            return { employee: r.name, bushes };
           }
-          return { employee: r.name, bushes };
+          let weight = null;
+          if (r.shareInput && r.shareInput.value.trim() !== '') {
+            const x = parseFloat(r.shareInput.value.replace(',', '.'));
+            if (isFinite(x) && x >= 0) weight = x;
+          }
+          return { employee: r.name, weight };
         });
         if (chosen.length === 0) return; // нечего записывать — ждём выбора
         close(chosen);
