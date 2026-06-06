@@ -1427,7 +1427,7 @@ app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
           return res.status(409).json({ error: 'Ряд уже снят с первого рабочего' });
         }
         // Ряд целиком — второму рабочему (одна плашка: слияние с его записью).
-        await upsertWorkLog(owner.col, owner.val, req, ctx, employee.trim(), rowNum, rowBushes);
+        await upsertWorkLog(owner.col, owner.val, req, ctx, employee.trim(), rowNum, rowBushes, 1);
         return res.json({ success: true });
       }
 
@@ -1594,37 +1594,39 @@ app.post('/api/disputed/:id/resolve', authOrDemo, async (req, res) => {
     // Формируем список (рабочий, кусты) для вставки.
     let toInsert = [];
     if (action === 'return-first') {
-      toInsert = [{ employee: d.claimed_by, bushes: rowBushes }];
+      toInsert = [{ employee: d.claimed_by, bushes: rowBushes, weight: 1 }];
     } else {
       const list = Array.isArray(assignments) ? assignments : [];
       const cleaned = list
         .map((a) => ({
           employee: a && a.employee ? String(a.employee).trim() : '',
-          bushes: (a && a.bushes !== null && a.bushes !== undefined && a.bushes !== '')
-            ? parseInt(a.bushes, 10) : null,
+          bushes: (a && a.bushes !== null && a.bushes !== undefined && a.bushes !== '') ? parseInt(a.bushes, 10) : null,
+          weight: (a && a.weight !== null && a.weight !== undefined && a.weight !== '') ? Number(a.weight) : null,
         }))
         .filter((a) => a.employee);
       if (cleaned.length === 0) {
         return res.status(400).json({ error: 'Выбери хотя бы одного рабочего' });
       }
       if (d.measure_mode !== 'rows_bushes') {
-        toInsert = cleaned.map((a) => ({ employee: a.employee, bushes: 0 }));
+        const weights = rowControl.fillWeights(cleaned.map((a) => a.weight));
+        toInsert = cleaned.map((a, i) => ({ employee: a.employee, bushes: 0, weight: weights[i] }));
       } else {
         for (const a of cleaned) {
           if (a.bushes !== null && (!Number.isInteger(a.bushes) || a.bushes < 0)) {
             return res.status(400).json({ error: 'Кусты должны быть неотрицательным числом' });
           }
         }
-        // Явные доли уважаем, остаток раздаём поровну по пустым.
         const explicitSum = cleaned.reduce((s, a) => s + (a.bushes !== null ? a.bushes : 0), 0);
         const blanksCount = cleaned.filter((a) => a.bushes === null).length;
         const remaining = Math.max(rowBushes - explicitSum, 0);
         const shares = rowControl.distributeBushes(remaining, blanksCount);
         let bi = 0;
-        toInsert = cleaned.map((a) => ({
+        const withBushes = cleaned.map((a) => ({
           employee: a.employee,
           bushes: a.bushes !== null ? a.bushes : shares[bi++],
         }));
+        const weights = rowControl.weightsFromBushes(rowBushes, withBushes.map((a) => a.bushes));
+        toInsert = withBushes.map((a, i) => ({ employee: a.employee, bushes: a.bushes, weight: weights[i] }));
       }
     }
 
@@ -1637,7 +1639,7 @@ app.post('/api/disputed/:id/resolve', authOrDemo, async (req, res) => {
       cell: d.cell, work_type: d.work_type, measure_mode: d.measure_mode,
     };
     for (const a of toInsert) {
-      await upsertWorkLog(owner.col, owner.val, req, ctx, a.employee, d.row_num, a.bushes);
+      await upsertWorkLog(owner.col, owner.val, req, ctx, a.employee, d.row_num, a.bushes, a.weight);
     }
 
     await pool.query(
