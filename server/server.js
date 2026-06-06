@@ -996,25 +996,22 @@ function rowOwner(req) {
 // если рядов не осталось — удаляет запись, иначе обновляет rows + bushes.
 // removedRowBushes — кусты ряда по инвентаризации (rows_only → 0). Возвращает true,
 // если запись найдена и обработана, иначе false.
-async function applyRowRemoval(ownerCol, ownerVal, logId, rowNum, removedRowBushes) {
+async function applyRowRemoval(ownerCol, ownerVal, logId, rowNum, rowBushes) {
   const rec = await pool.query(
-    `SELECT rows, bushes FROM work_logs WHERE id = $1 AND ${ownerCol} = $2`,
+    `SELECT rows, row_weights, bushes FROM work_logs WHERE id = $1 AND ${ownerCol} = $2`,
     [logId, ownerVal]
   );
   if (rec.rowCount === 0) return false;
   const out = rowControl.removeRowFromRecord(
-    rec.rows[0].rows, rec.rows[0].bushes, rowNum, removedRowBushes
+    rec.rows[0].rows, rec.rows[0].row_weights, rec.rows[0].bushes, rowNum, rowBushes
   );
   if (!out.found) return false;
   if (out.deleted) {
-    await pool.query(
-      `DELETE FROM work_logs WHERE id = $1 AND ${ownerCol} = $2`,
-      [logId, ownerVal]
-    );
+    await pool.query(`DELETE FROM work_logs WHERE id = $1 AND ${ownerCol} = $2`, [logId, ownerVal]);
   } else {
     await pool.query(
-      `UPDATE work_logs SET rows = $1, bushes = $2 WHERE id = $3 AND ${ownerCol} = $4`,
-      [out.rows, out.bushes, logId, ownerVal]
+      `UPDATE work_logs SET rows = $1, row_weights = $2, bushes = $3 WHERE id = $4 AND ${ownerCol} = $5`,
+      [out.rows, out.weights, out.bushes, logId, ownerVal]
     );
   }
   return true;
@@ -1046,9 +1043,9 @@ async function insertDisputed(d, owner, req) {
 // разрезе и дате — ряд добавляется к ней и кусты прибавляются; иначе создаётся
 // новая запись на один ряд. Демо/прод по DEMO_MODE.
 // ctx: { date, estate, quarter, cell, work_type, measure_mode }.
-async function upsertWorkLog(ownerCol, ownerVal, req, ctx, emp, rowNum, bushes) {
+async function upsertWorkLog(ownerCol, ownerVal, req, ctx, emp, rowNum, bushes, weight) {
   const ex = await pool.query(
-    `SELECT id, rows, bushes FROM work_logs
+    `SELECT id, rows, row_weights, bushes FROM work_logs
      WHERE ${ownerCol} = $1 AND date = $2 AND estate_id = $3 AND quarter = $4
        AND cell = $5 AND work_type = $6 AND measure_mode = $7 AND employee = $8
      ORDER BY id LIMIT 1`,
@@ -1059,25 +1056,28 @@ async function upsertWorkLog(ownerCol, ownerVal, req, ctx, emp, rowNum, bushes) 
     const nums = String(rec.rows || '').split(',').map((s) => parseInt(s, 10)).filter((n) => Number.isInteger(n));
     if (!nums.includes(rowNum)) nums.push(rowNum);
     nums.sort((a, b) => a - b);
+    const w = rowControl.parseRowWeights(rec.row_weights);
+    w[rowNum] = weight;
     await pool.query(
-      `UPDATE work_logs SET rows = $1, bushes = $2 WHERE id = $3 AND ${ownerCol} = $4`,
-      [nums.join(','), (rec.bushes || 0) + bushes, rec.id, ownerVal]
+      `UPDATE work_logs SET rows = $1, row_weights = $2, bushes = $3 WHERE id = $4 AND ${ownerCol} = $5`,
+      [nums.join(','), rowControl.serializeRowWeights(w), (rec.bushes || 0) + bushes, rec.id, ownerVal]
     );
     return;
   }
+  const wjson = rowControl.serializeRowWeights({ [rowNum]: weight });
   if (DEMO_MODE) {
     await pool.query(
       `INSERT INTO work_logs
-        (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, demo_session_id, work_type, measure_mode, hours)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-      [ctx.date, ctx.estate, String(ctx.quarter), String(ctx.cell), emp, String(rowNum), bushes, 0, req.demo_session_id, ctx.work_type, ctx.measure_mode, null]
+        (date, estate_id, quarter, cell, employee, rows, row_weights, bushes, brigadier_id, demo_session_id, work_type, measure_mode, hours)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      [ctx.date, ctx.estate, String(ctx.quarter), String(ctx.cell), emp, String(rowNum), wjson, bushes, 0, req.demo_session_id, ctx.work_type, ctx.measure_mode, null]
     );
   } else {
     await pool.query(
       `INSERT INTO work_logs
-        (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, work_type, measure_mode, hours)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-      [ctx.date, ctx.estate, String(ctx.quarter), String(ctx.cell), emp, String(rowNum), bushes, req.brigadier.id, ctx.work_type, ctx.measure_mode, null]
+        (date, estate_id, quarter, cell, employee, rows, row_weights, bushes, brigadier_id, work_type, measure_mode, hours)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [ctx.date, ctx.estate, String(ctx.quarter), String(ctx.cell), emp, String(rowNum), wjson, bushes, req.brigadier.id, ctx.work_type, ctx.measure_mode, null]
     );
   }
 }
@@ -1157,6 +1157,14 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
       req._rowConflicts = { sameDay: cls.sameDay, otherDay: cls.otherDay };
     }
 
+    // Вес каждого введённого ряда = 1 (целый ряд). Для hours/без рядов — null.
+    let rowWeightsStr = null;
+    if (rowsStr) {
+      const wobj = {};
+      for (const n of rowsStr.split(',')) if (n.trim()) wobj[n.trim()] = 1;
+      rowWeightsStr = rowControl.serializeRowWeights(wobj);
+    }
+
     // Защита от непреднамеренных дублей: если ровно такая же запись была
     // создана в последние 10 секунд — отказываем. Случайный повторный тап
     // через несколько секунд после ответа не пройдёт, а намеренная одинаковая
@@ -1181,11 +1189,11 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
       }
       const ins = await pool.query(
         `INSERT INTO work_logs
-          (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, demo_session_id, work_type, measure_mode, hours)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          (date, estate_id, quarter, cell, employee, rows, row_weights, bushes, brigadier_id, demo_session_id, work_type, measure_mode, hours)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          RETURNING id`,
         [date, estate, quarter ? String(quarter) : '', cell ? String(cell) : '',
-         employee.trim(), rowsStr, bushes, 0, req.demo_session_id,
+         employee.trim(), rowsStr, rowWeightsStr, bushes, 0, req.demo_session_id,
          work_type.trim(), measure_mode, hoursVal]
       );
       return res.json({
@@ -1216,11 +1224,11 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
 
     const ins = await pool.query(
       `INSERT INTO work_logs
-        (date, estate_id, quarter, cell, employee, rows, bushes, brigadier_id, work_type, measure_mode, hours)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        (date, estate_id, quarter, cell, employee, rows, row_weights, bushes, brigadier_id, work_type, measure_mode, hours)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING id`,
       [date, estate, quarter ? String(quarter) : '', cell ? String(cell) : '',
-       employee.trim(), rowsStr, bushes, req.brigadier.id,
+       employee.trim(), rowsStr, rowWeightsStr, bushes, req.brigadier.id,
        work_type.trim(), measure_mode, hoursVal]
     );
     res.json({
