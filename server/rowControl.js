@@ -136,7 +136,9 @@ function distributeBushes(total, n) {
 // weightByRow: Map<Number,Number> | {row: weightSum} — суммарный вес ряда из журнала
 //   (целый ряд = 1, поделённый = доля, ряд без записи отсутствует/0).
 // disputedSet: Set<Number> — номера спорных рядов клетки (в этом разрезе).
-// Возвращает сводку + списки несделанных. «сделано + осталось = всего».
+// Возвращает сводку + списки несделанных. «сделано + осталось = всего» при весах в [0,1]
+// (доменная норма); remaining зажат в ≥0. Done намеренно НЕ клампим — аномалии (вес >1
+// из-за дубля записи) остаются видны, а не маскируются.
 function computeCellReconciliation(inventoryRows, weightByRow, disputedSet) {
   const rows = Array.isArray(inventoryRows) ? inventoryRows : [];
   const disputed = disputedSet instanceof Set ? disputedSet : new Set(disputedSet || []);
@@ -151,6 +153,7 @@ function computeCellReconciliation(inventoryRows, weightByRow, disputedSet) {
   const disputedRows = [];
   for (const item of rows) {
     const row = Number(item.row);
+    if (!Number.isFinite(row)) continue; // пропускаем мусорные записи инвентаря
     const bushes = Number(item.bushes) || 0;
     totalRows += 1;
     totalBushes += bushes;
