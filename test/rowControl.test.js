@@ -264,4 +264,6 @@ test('reconcile: пустой инвентарь рядов — безопасн
 test('reconcile: weightByRow как Map тоже работает', () => {
   const r = computeCellReconciliation(inv3, new Map([[1, 1], [2, 1], [3, 1]]), new Set());
   assert.strictEqual(r.fullyDone, true);
+  assert.strictEqual(r.doneRows, 3);
+  assert.strictEqual(r.doneBushes, 300);
 });
