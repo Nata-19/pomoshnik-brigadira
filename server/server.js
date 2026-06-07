@@ -1575,6 +1575,7 @@ app.get('/api/rows-status', authOrDemo, async (req, res) => {
     const { estate, quarter, cell } = req.query;
     // work_type в work_logs/disputed_rows хранится обрезанным (.trim()) — сравниваем так же.
     const work_type = String(req.query.work_type || '').trim();
+    // Проверяем null/'' (а не !quarter), т.к. 0 — допустимый номер квартала/клетки.
     if (!estate || quarter == null || quarter === '' || cell == null || cell === '' || !work_type) {
       return res.status(400).json({ error: 'Укажи хозяйство, квартал, клетку и вид работ' });
     }
@@ -1589,7 +1590,7 @@ app.get('/api/rows-status', authOrDemo, async (req, res) => {
     } catch (e) {
       return res.status(400).json({ error: e.message });
     }
-    if (!inventoryRows || inventoryRows.length === 0) {
+    if (inventoryRows.length === 0) {
       return res.status(400).json({ error: 'Нет данных по клетке' });
     }
 
