@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { splitBushes, classifyRows, removeRowFromRecord, distributeBushes } = require('../server/rowControl');
+const { splitBushes, classifyRows, removeRowFromRecord, distributeBushes, computeCellReconciliation } = require('../server/rowControl');
 
 test('splitBushes делит поровну, чётное', () => {
   assert.deepStrictEqual(splitBushes(100, null), { first: 50, second: 50 });
@@ -206,4 +206,64 @@ test('removeRowFromRecord: старая запись без весов → ве�
   const out = removeRowFromRecord('1,2', null, 80, 2, 30);
   assert.strictEqual(out.bushes, 50);
   assert.strictEqual(out.found, true);
+});
+
+// --- computeCellReconciliation (Фаза 3 «Сверка») ---
+const inv3 = [{ row: 1, bushes: 100 }, { row: 2, bushes: 100 }, { row: 3, bushes: 100 }];
+
+test('reconcile: клетка сделана полностью', () => {
+  const r = computeCellReconciliation(inv3, { 1: 1, 2: 1, 3: 1 }, new Set());
+  assert.strictEqual(r.fullyDone, true);
+  assert.deepStrictEqual(r.missedRows, []);
+  assert.strictEqual(r.doneRows, 3);
+  assert.strictEqual(r.remainingRows, 0);
+  assert.strictEqual(r.totalBushes, 300);
+  assert.strictEqual(r.doneBushes, 300);
+  assert.strictEqual(r.remainingBushes, 0);
+});
+
+test('reconcile: частично — забытые ряды попадают в missed', () => {
+  const r = computeCellReconciliation(inv3, { 1: 1 }, new Set());
+  assert.strictEqual(r.fullyDone, false);
+  assert.deepStrictEqual(r.missedRows, [2, 3]);
+  assert.strictEqual(r.doneRows, 1);
+  assert.strictEqual(r.remainingRows, 2);
+  assert.strictEqual(r.doneBushes, 100);
+  assert.strictEqual(r.remainingBushes, 200);
+});
+
+test('reconcile: спорные не в missed, но в disputedRows и в остатке', () => {
+  const r = computeCellReconciliation(inv3, { 1: 1 }, new Set([2]));
+  assert.deepStrictEqual(r.missedRows, [3]);        // 2 спорный → не в missed
+  assert.deepStrictEqual(r.disputedRows, [2]);
+  assert.strictEqual(r.disputedCount, 1);
+  assert.strictEqual(r.remainingRows, 2);           // 2 и 3 не сделаны
+  assert.strictEqual(r.doneRows + r.remainingRows, r.totalRows); // сходимость
+  assert.strictEqual(r.doneBushes + r.remainingBushes, r.totalBushes);
+  assert.strictEqual(r.fullyDone, false);
+});
+
+test('reconcile: дробный ряд (вес 0.5) — не в missed, остаток учитывает половину', () => {
+  const r = computeCellReconciliation(inv3, { 1: 1, 2: 0.5 }, new Set());
+  assert.strictEqual(r.doneRows, 1.5);
+  assert.deepStrictEqual(r.missedRows, [3]);        // 2 записан частично → не забыт
+  assert.strictEqual(r.doneBushes, 150);            // 100 + 50
+  assert.strictEqual(r.remainingBushes, 150);
+  assert.strictEqual(r.remainingRows, 1.5);
+});
+
+test('reconcile: пустой инвентарь рядов — безопасно', () => {
+  const r = computeCellReconciliation([], {}, new Set());
+  assert.strictEqual(r.totalRows, 0);
+  assert.strictEqual(r.totalBushes, 0);
+  assert.deepStrictEqual(r.missedRows, []);
+  assert.deepStrictEqual(r.disputedRows, []);
+  assert.strictEqual(r.fullyDone, true);
+});
+
+test('reconcile: weightByRow как Map тоже работает', () => {
+  const r = computeCellReconciliation(inv3, new Map([[1, 1], [2, 1], [3, 1]]), new Set());
+  assert.strictEqual(r.fullyDone, true);
+  assert.strictEqual(r.doneRows, 3);
+  assert.strictEqual(r.doneBushes, 300);
 });

@@ -131,8 +131,57 @@ function distributeBushes(total, n) {
   return out;
 }
 
+// Сверка по клетке (Фаза 3). Считает по инвентарю с учётом долей.
+// inventoryRows: [{row:Number, bushes:Number}] — ряды клетки из инвентаря.
+// weightByRow: Map<Number,Number> | {row: weightSum} — суммарный вес ряда из журнала
+//   (целый ряд = 1, поделённый = доля, ряд без записи отсутствует/0).
+// disputedSet: Set<Number> — номера спорных рядов клетки (в этом разрезе).
+// Возвращает сводку + списки несделанных. «сделано + осталось = всего» при весах в [0,1]
+// (доменная норма); remaining зажат в ≥0. Done намеренно НЕ клампим — аномалии (вес >1
+// из-за дубля записи) остаются видны, а не маскируются.
+function computeCellReconciliation(inventoryRows, weightByRow, disputedSet) {
+  const rows = Array.isArray(inventoryRows) ? inventoryRows : [];
+  const disputed = disputedSet instanceof Set ? disputedSet : new Set(disputedSet || []);
+  const weightOf = (row) => {
+    const w = (weightByRow instanceof Map) ? weightByRow.get(row)
+      : (weightByRow ? weightByRow[row] : undefined);
+    return (typeof w === 'number' && isFinite(w)) ? w : 0;
+  };
+
+  let totalRows = 0, totalBushes = 0, doneRows = 0, doneBushesRaw = 0;
+  const missedRows = [];
+  const disputedRows = [];
+  for (const item of rows) {
+    const row = Number(item.row);
+    if (!Number.isFinite(row)) continue; // пропускаем мусорные записи инвентаря
+    const bushes = Number(item.bushes) || 0;
+    totalRows += 1;
+    totalBushes += bushes;
+    const w = weightOf(row);
+    doneRows += w;
+    doneBushesRaw += w * bushes;
+    if (disputed.has(row)) disputedRows.push(row);
+    if (w === 0 && !disputed.has(row)) missedRows.push(row);
+  }
+
+  const doneBushes = Math.round(doneBushesRaw);
+  const remainingRows = Math.max(totalRows - doneRows, 0);
+  const remainingBushes = Math.max(totalBushes - doneBushes, 0);
+  missedRows.sort((a, b) => a - b);
+  disputedRows.sort((a, b) => a - b);
+  const fullyDone = Math.round(remainingRows * 100) / 100 === 0
+    && missedRows.length === 0 && disputedRows.length === 0;
+
+  return {
+    totalRows, totalBushes, doneRows, doneBushes,
+    remainingRows, remainingBushes,
+    missedRows, disputedRows, disputedCount: disputedRows.length, fullyDone,
+  };
+}
+
 module.exports = {
   splitBushes, classifyRows, removeRowFromRecord, distributeBushes,
   parseRowWeights, serializeRowWeights, weightOfRecord,
   weightsFromBushes, fillWeights, formatRows,
+  computeCellReconciliation,
 };

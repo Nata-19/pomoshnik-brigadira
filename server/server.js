@@ -1463,6 +1463,68 @@ app.get('/api/disputed', authOrDemo, async (req, res) => {
   }
 });
 
+// Сверка по клетке (Фаза 3): сделано/осталось + список несделанных рядов.
+// Только просмотр. Разрез: estate+quarter+cell+work_type, накопительно.
+app.get('/api/rows-status', authOrDemo, async (req, res) => {
+  try {
+    const { estate, quarter, cell } = req.query;
+    // work_type в work_logs/disputed_rows хранится обрезанным (.trim()) — сравниваем так же.
+    const work_type = String(req.query.work_type || '').trim();
+    // Проверяем null/'' (а не !quarter), т.к. 0 — допустимый номер квартала/клетки.
+    if (!estate || quarter == null || quarter === '' || cell == null || cell === '' || !work_type) {
+      return res.status(400).json({ error: 'Укажи хозяйство, квартал, клетку и вид работ' });
+    }
+
+    let parserToUse;
+    if (DEMO_MODE) parserToUse = new DataParser(await demo.getDemoInventory(pool, req.demo_session_id));
+    else parserToUse = parser;
+
+    let inventoryRows;
+    try {
+      inventoryRows = parserToUse.getCellRows(estate, String(quarter), String(cell));
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+    if (inventoryRows.length === 0) {
+      return res.status(400).json({ error: 'Нет данных по клетке' });
+    }
+
+    const owner = rowOwner(req);
+
+    // Журнал в разрезе: только рядовые режимы, непустые ряды.
+    const logs = await pool.query(
+      `SELECT rows, row_weights FROM work_logs
+       WHERE estate_id = $1 AND quarter = $2 AND cell = $3 AND work_type = $4
+         AND measure_mode IN ('rows_bushes','rows_only')
+         AND rows IS NOT NULL AND rows <> '' AND ${owner.col} = $5`,
+      [estate, String(quarter), String(cell), work_type, owner.val]
+    );
+    const weightByRow = {};
+    for (const r of logs.rows) {
+      const nums = String(r.rows || '').split(',').map((s) => parseInt(s, 10)).filter(Number.isInteger);
+      const w = rowControl.parseRowWeights(r.row_weights);
+      for (const n of nums) {
+        const wv = (typeof w[n] === 'number' && isFinite(w[n])) ? w[n] : 1;
+        weightByRow[n] = (weightByRow[n] || 0) + wv;
+      }
+    }
+
+    // Спорные ряды того же разреза.
+    const disp = await pool.query(
+      `SELECT row_num FROM disputed_rows
+       WHERE estate_id = $1 AND quarter = $2 AND cell = $3 AND work_type = $4 AND ${owner.col} = $5`,
+      [estate, String(quarter), String(cell), work_type, owner.val]
+    );
+    const disputedSet = new Set(disp.rows.map((d) => Number(d.row_num)));
+
+    const result = rowControl.computeCellReconciliation(inventoryRows, weightByRow, disputedSet);
+    res.json(result);
+  } catch (error) {
+    console.error('Rows status error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Разбор спорного ряда:
 //   'assign-actual' — записать тем, кто реально делал: один или несколько рабочих,
 //      кусты ряда делятся (assignments: [{employee, bushes?}], пустые доли — поровну);

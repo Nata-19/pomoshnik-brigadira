@@ -412,6 +412,7 @@ class BrigadeAssistant {
           <button class="tab-button" onclick="app.switchTab(event, 'report')">Отчет за период</button>
           <button class="tab-button" onclick="app.switchTab(event, 'logs'); app.loadLogs()">Журнал</button>
           <button class="tab-button" onclick="app.switchTab(event, 'disputed'); app.loadDisputed()">Спорные</button>
+          <button class="tab-button" onclick="app.switchTab(event, 'reconcile'); app.onReconcileTabOpen()">Сверка</button>
           ${this.me && this.me.is_admin ? `<button class="tab-button" onclick="app.switchTab(event, 'admin'); app.loadBrigadiers()">Админ</button>` : ''}
         </div>
 
@@ -447,6 +448,25 @@ class BrigadeAssistant {
         <div class="tab-content" id="disputed-tab">
           <button onclick="app.loadDisputed()">Обновить</button>
           <div id="disputed-list" class="logs-list"></div>
+        </div>
+
+        <div class="tab-content" id="reconcile-tab">
+          <div class="ctx-block">
+            <div class="block-label">Сверка по клетке</div>
+            <div class="chips-row">
+              <select id="rc-quarter" class="chip-select" onchange="app.onReconcileQuarterChange()">
+                <option value="">Квартал...</option>
+              </select>
+              <select id="rc-cell" class="chip-select">
+                <option value="">Клетка...</option>
+              </select>
+              <select id="rc-worktype" class="chip-select">
+                <option value="">Вид работ...</option>
+              </select>
+            </div>
+            <button onclick="app.loadRowsStatus()">Показать</button>
+          </div>
+          <div id="reconcile-result" class="result" style="display:none;"></div>
         </div>
 
         ${this.me && this.me.is_admin ? `
@@ -1290,6 +1310,115 @@ class BrigadeAssistant {
         </div>
       </div>
     `).join('');
+  }
+
+  // Вкладка «Сверка» открыта: (пере)заполнить селекторы актуальными кварталами и
+  // видами работ. Делаем при каждом открытии, т.к. контейнер вкладок строится один
+  // раз, а хозяйство могло смениться. Сохранённое значение восстанавливаем, если ещё валидно.
+  onReconcileTabOpen() {
+    const qSel = document.getElementById('rc-quarter');
+    const wSel = document.getElementById('rc-worktype');
+    const res = document.getElementById('reconcile-result');
+    if (qSel) {
+      const prev = qSel.value;
+      qSel.innerHTML = '<option value="">Квартал...</option>' +
+        this.quarters.map(q => `<option value="${q.id}">${this.escapeHtml(q.name)}</option>`).join('');
+      if (prev && this.quarters.some(q => String(q.id) === prev)) qSel.value = prev;
+    }
+    if (wSel) {
+      const prev = wSel.value;
+      wSel.innerHTML = '<option value="">Вид работ...</option>' +
+        this.workTypes.map(w => `<option value="${this.escapeHtml(w.name)}">${this.escapeHtml(w.name)}</option>`).join('');
+      if (prev && this.workTypes.some(w => w.name === prev)) wSel.value = prev;
+    }
+    // Клетки зависят от квартала: сбрасываем и, если квартал сохранён, перезагружаем.
+    const cSel = document.getElementById('rc-cell');
+    if (cSel) cSel.innerHTML = '<option value="">Клетка...</option>';
+    if (qSel && qSel.value) this.onReconcileQuarterChange();
+    if (res && !this.estate) {
+      res.style.display = 'block';
+      res.innerHTML = '<p style="color:#888;padding:10px;">Сначала выбери хозяйство</p>';
+    }
+  }
+
+  // Смена квартала — подгрузить клетки.
+  async onReconcileQuarterChange() {
+    const qSel = document.getElementById('rc-quarter');
+    const cSel = document.getElementById('rc-cell');
+    if (!qSel || !cSel) return;
+    cSel.innerHTML = '<option value="">Клетка...</option>';
+    if (!qSel.value) return;
+    const cells = await this.loadCells(qSel.value);
+    cSel.innerHTML = '<option value="">Клетка...</option>' +
+      cells.map(c => `<option value="${this.escapeHtml(c)}">${this.escapeHtml(c)}</option>`).join('');
+  }
+
+  // Запросить сверку по выбранному разрезу.
+  async loadRowsStatus() {
+    const res = document.getElementById('reconcile-result');
+    if (!res) return;
+    res.style.display = 'block';
+    if (!this.estate) {
+      res.innerHTML = '<p style="color:#888;padding:10px;">Сначала выбери хозяйство</p>';
+      return;
+    }
+    const quarter = (document.getElementById('rc-quarter') || {}).value || '';
+    const cell = (document.getElementById('rc-cell') || {}).value || '';
+    const workType = (document.getElementById('rc-worktype') || {}).value || '';
+    if (!quarter || !cell || !workType) {
+      res.innerHTML = '<p style="color:#888;padding:10px;">Выбери квартал, клетку и вид работ</p>';
+      return;
+    }
+    res.innerHTML = '<p style="padding:10px;">⏳ Загрузка...</p>';
+    try {
+      const url = '/api/rows-status?estate=' + encodeURIComponent(this.estate) +
+        '&quarter=' + encodeURIComponent(quarter) +
+        '&cell=' + encodeURIComponent(cell) +
+        '&work_type=' + encodeURIComponent(workType);
+      const r = await this.apiFetch(url);
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        res.innerHTML = `<p style="color:#c00;padding:10px;">${this.escapeHtml(data.error || 'Ошибка')}</p>`;
+        return;
+      }
+      this.renderRowsStatus(data);
+    } catch (e) {
+      res.innerHTML = `<p style="color:#c00;padding:10px;">${this.escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  // Рендер сверки: сводка + единый список несделанных (спорные с пометкой).
+  renderRowsStatus(data) {
+    const res = document.getElementById('reconcile-result');
+    if (!res) return;
+    const dispNote = data.disputedCount > 0
+      ? ` <span style="color:#c60;">· в т.ч. ${Number(data.disputedCount)} спорных — см. вкладку Спорные</span>`
+      : '';
+    let summary;
+    if (data.fullyDone) {
+      summary = `<div><b>Клетка сделана полностью:</b> ${this.fmtRows(data.totalRows)} рядов, ${data.totalBushes} кустов.</div>`;
+    } else {
+      summary = `<div><b>Сделано:</b> ${this.fmtRows(data.doneRows)} рядов, ${data.doneBushes} кустов`
+        + ` · <b>Осталось:</b> ${this.fmtRows(data.remainingRows)} рядов, ${data.remainingBushes} кустов${dispNote}</div>`;
+    }
+
+    const undone = [
+      ...(data.missedRows || []).map((n) => ({ row: Number(n), disputed: false })),
+      ...(data.disputedRows || []).map((n) => ({ row: Number(n), disputed: true })),
+    ].sort((a, b) => a.row - b.row);
+
+    let listHtml;
+    if (undone.length === 0) {
+      listHtml = '<div style="color:#888;padding:6px 0;">Несделанных рядов нет.</div>';
+    } else {
+      listHtml = '<div style="margin-top:8px;"><b>Не сделаны:</b> '
+        + undone.map((u) => u.disputed
+          ? `${u.row} <span style="color:#c60;" title="спорный">⚠️</span>`
+          : `${u.row}`).join(', ')
+        + '</div>';
+    }
+
+    res.innerHTML = summary + listHtml;
   }
 
   // Открывает модалку выбора рабочих (одного или нескольких) с долями кустов,
