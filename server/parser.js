@@ -314,6 +314,23 @@ class DataParser {
     return totalBushes;
   }
 
+  // Ряды клетки из инвентаризации: [{row, bushes}]. Та же валидация, что getBushesCount.
+  getCellRows(estate, quarter, cell) {
+    const edata = this.inventory.estates[estate];
+    if (!edata) {
+      throw new Error(`Хозяйство "${estate}" не найдено в инвентаризации`);
+    }
+    const qdata = edata.quarters[quarter];
+    if (!qdata) {
+      throw new Error(`Ряды отсутствуют в инвентаризации для квартала ${quarter}`);
+    }
+    const cellData = qdata.cells[cell];
+    if (!cellData) {
+      throw new Error(`Клетка ${cell} не найдена в квартале ${quarter}`);
+    }
+    return cellData.map((item) => ({ row: item.row, bushes: item.bushes }));
+  }
+
   isValidDate(dateStr) {
     const regex = /^\d{4}-\d{2}-\d{2}$/;
     if (!regex.test(dateStr)) return false;
