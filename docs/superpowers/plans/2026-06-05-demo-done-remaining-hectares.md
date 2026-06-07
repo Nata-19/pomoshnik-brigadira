@@ -12,14 +12,18 @@
 
 **Реализуем ПОСЛЕ Фазы 3 контроля рядов.** Метод — Subagent-Driven в git worktree от `demo-five-modes`.
 
+**Обновление 2026-06-07 — план сверен с текущим кодом `demo-five-modes` @ `e17760b`** (после дробного учёта и Фазы 3 «Сверка»). Освежены якоря/пути/имена (см. ниже). Техбаза подтверждена: `getDemoInventory` (demo.js:234) отдаёт клетку объектом `{ hectares, rows }`, `getHectaresForRows` (parser.js:331) читает `cellData.hectares` — перевод рядов→га работает. Алгоритм «уникальные ряды» из спеки СОХРАНЁН (не переходим на дробные веса): для делённого ряда веса покрывают его целиком, поэтому «уникальные ряды» дают тот же результат, что фракционная «Сверка» (полностью покрытый ряд = 1, спорный = не сделан). Расхождение возможно только при редком ручном частичном вводе (<1 на ряд) — несущественно для демо.
+
 ---
 
 ## File Structure
 
 - **Create:** `server/hectaresReport.js` — чистая функция агрегации (без БД, без Express). Единственная ответственность: из плоского списка записей + двух колбэков перевода построить строки отчёта.
 - **Create:** `test/hectaresReport.test.js` — юнит-тесты агрегатора.
-- **Modify:** `server/server.js` — новый endpoint `GET /api/report/hectares` (рядом с `GET /api/report`, ~строка 1858) + `require` агрегатора вверху файла.
-- **Modify:** `public/js/app.js` — кнопка вкладки (~строка 508), блок `tab-content#perf-tab` (~строка 544), методы `loadPerformance()`, `renderPerformance()`, состояние фильтров.
+- **Modify:** `server/server.js` — новый endpoint `GET /api/report/hectares` (сразу после `app.get('/api/report'`, **строка 1850**) + `require` агрегатора вверху файла.
+- **Modify:** `public/js/app.js` — кнопка вкладки (после кнопки «Сверка», **строка 509**), блок `tab-content#perf-tab` (после блока `id="reconcile-tab"`, **строка 547**), методы `loadPerformance()`/`togglePerfFilter()`/`renderPerformance()` (рядом с `renderRowsStatus`, **~строка 2080**), состояние фильтров в конструкторе.
+- **Modify:** `public/styles.css` — стили чипов фильтров (файл лежит в `public/styles.css`, НЕ в `public/css/`).
+- **Modify:** `public/service-worker.js` — бамп `CACHE_NAME` v21→v22 (правим клиент → иначе установленный PWA крутит старое).
 
 ---
 
@@ -208,7 +212,7 @@ const { buildHectaresReport } = require('./hectaresReport');
 
 - [ ] **Step 2: Добавить endpoint**
 
-Сразу ПОСЛЕ блока `app.get('/api/report', ...)` (после его закрывающей `});`, ~строка 1860) вставить:
+Сразу ПОСЛЕ блока `app.get('/api/report', ...)` (после его закрывающей `});`, **строка 1850**) вставить:
 
 ```js
 // Отчёт «Выполнение»: по виду работ × квартал — сколько гектаров сделано
@@ -277,12 +281,12 @@ Expected: без вывода (OK).
 
 - [ ] **Step 4: Smoke — endpoint на пустой сессии отвечает 200 и `{rows:[]}`**
 
-Запустить сервер локально с демо-БД (как обычно поднимается демо) и проверить новую демо-сессию:
+Демо-сессия создаётся через `POST /api/demo/session` (НЕ `/api/demo/start`); без валидной сессии любой `/api/...` (кроме `/api/demo/session` и `/api/config`) вернёт 401 «no demo session» (см. server.js:403-407). Проще всего проверить при деплое на VPS, где БД и сессии уже есть:
 
-Run: `curl -s -c cj.txt http://localhost:3000/api/demo/start -X POST > /dev/null; curl -s -b cj.txt http://localhost:3000/api/report/hectares`
-Expected: `{"rows":[]}` со статусом 200.
+Run (на VPS, порт **3001**): `curl -s -X POST http://127.0.0.1:3001/api/demo/session -H 'Content-Type: application/json' -d '{}' -c cj.txt >/dev/null; curl -s -b cj.txt http://127.0.0.1:3001/api/report/hectares`
+Expected: `{"rows":[]}` (пустая новая сессия), статус 200.
 
-(Если локальная демо-БД не поднята — отметить шаг как проверяемый при деплое на VPS; не блокирует коммит, т.к. логика покрыта юнит-тестами Task 1.)
+(Локально без демо-БД шаг не блокирует коммит — логика покрыта юнит-тестами Task 1; финальная проверка — на VPS и живая Натали.)
 
 - [ ] **Step 5: Коммит**
 
@@ -300,7 +304,7 @@ git commit -m "feat(demo): endpoint GET /api/report/hectares"
 
 - [ ] **Step 1: Добавить кнопку вкладки**
 
-В блоке `<div class="tabs">` (после кнопки «Спорные», строка 508) добавить:
+В блоке `<div class="tabs">` (после кнопки «Сверка», **строка 509**, перед условной кнопкой «Админ») добавить:
 
 ```js
           <button class="tab-button" onclick="app.switchTab(event, 'perf'); app.loadPerformance()">Выполнение</button>
@@ -308,7 +312,7 @@ git commit -m "feat(demo): endpoint GET /api/report/hectares"
 
 - [ ] **Step 2: Добавить контейнер вкладки**
 
-После блока `<div class="tab-content" id="disputed-tab"> ... </div>` (после строки 544) вставить:
+После блока `<div class="tab-content" id="reconcile-tab"> ... </div>` (блок Фазы 3 начинается на **строке 547**; вставлять ПОСЛЕ его закрывающего `</div>`) вставить:
 
 ```js
         <div class="tab-content" id="perf-tab">
@@ -330,7 +334,7 @@ git commit -m "feat(demo): endpoint GET /api/report/hectares"
 
 - [ ] **Step 4: Добавить методы загрузки и отрисовки**
 
-Рядом с `renderDisputed()` (после строки 1896) добавить:
+Рядом с методами вкладок «Спорные»/«Сверка» (`renderDisputed` ~строка 1963, `renderRowsStatus` ~строка 2058; вставить после `renderRowsStatus`, **~строка 2080**) добавить:
 
 ```js
   // Загружает отчёт «Выполнение» (га сделано/осталось) и рисует с фильтрами.
@@ -400,9 +404,9 @@ git commit -m "feat(demo): endpoint GET /api/report/hectares"
   }
 ```
 
-- [ ] **Step 5: Добавить `escapeAttr`, если её нет**
+- [ ] **Step 5: Добавить `escapeAttr` (в текущем `app.js` её НЕТ — добавить обязательно)**
 
-Проверить наличие `escapeAttr` в `app.js` (`grep escapeAttr public/js/app.js`). Если метода нет — добавить рядом с `escapeHtml`:
+Сверено 2026-06-07: метода `escapeAttr` в `app.js` нет. Добавить рядом с `escapeHtml`:
 
 ```js
   // Экранирует значение для подстановки в одинарные кавычки onclick-атрибута.
@@ -415,7 +419,7 @@ git commit -m "feat(demo): endpoint GET /api/report/hectares"
 
 - [ ] **Step 6: Добавить минимальные стили чипов**
 
-В `public/css/styles.css` (в конец) добавить, если классов нет:
+В `public/styles.css` (в конец; файл лежит именно в `public/styles.css`, каталога `public/css/` нет) добавить, если классов нет:
 
 ```css
 .perf-filter-row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:6px 0; }
@@ -423,6 +427,22 @@ git commit -m "feat(demo): endpoint GET /api/report/hectares"
 .filter-chip { padding:4px 10px; border:1px solid #ccc; border-radius:14px; background:#fff; font-size:13px; cursor:pointer; }
 .filter-chip.active { background:#2e7d32; color:#fff; border-color:#2e7d32; }
 ```
+
+- [ ] **Step 6b: Поднять версию кеша PWA (обязательно — правили клиент)**
+
+В `public/service-worker.js` (строка 1) заменить:
+
+```js
+const CACHE_NAME = 'brigade-v21';
+```
+
+на:
+
+```js
+const CACHE_NAME = 'brigade-v22';
+```
+
+Без этого установленный PWA на телефоне будет крутить старый клиент без вкладки «Выполнение» (известный урок проекта). Демо-SW на момент составления плана = `brigade-v21`; ПЕРЕД правкой убедиться `grep CACHE_NAME public/service-worker.js` и поднять на следующий номер.
 
 - [ ] **Step 7: Проверить синтаксис JS**
 
@@ -440,8 +460,8 @@ Expected: без вывода (OK).
 - [ ] **Step 9: Коммит**
 
 ```bash
-git add public/js/app.js public/css/styles.css
-git commit -m "feat(demo): вкладка Выполнение (сделано/осталось в га) + фильтры"
+git add public/js/app.js public/styles.css public/service-worker.js
+git commit -m "feat(demo): вкладка Выполнение (сделано/осталось в га) + фильтры, бамп кеша SW"
 ```
 
 ---
@@ -450,7 +470,7 @@ git commit -m "feat(demo): вкладка Выполнение (сделано/�
 
 - [ ] Холистическое ревью всей ветки (spec + code-quality) согласно subagent-driven-development.
 - [ ] Прогон: `node --test` (весь набор) + `node --check` ключевых файлов.
-- [ ] **Деплой — отдельным шагом, после живой проверки Натали:** merge ветки в `demo-five-modes`, push в приватный SourceCraft, на VPS (Beget, `/opt/pomoshnik-demo`, pm2 `pomoshnik-demo`) `git pull && pm2 restart`, smoke `/api/report/hectares` → 200. Боевого НЕ касаемся.
+- [ ] **Деплой — отдельным шагом, после живой проверки Натали:** merge ветки в `demo-five-modes`, push в приватный SourceCraft (`git push demo demo-five-modes`), на VPS (`root@213.139.210.254`, `/opt/pomoshnik-demo`, pm2 `pomoshnik-demo`, **порт 3001**) `git pull && pm2 restart pomoshnik-demo`, smoke `/api/report/hectares` → 200, публичный health https://demo.smart-assistantai.ru/health → 200. **Боевого (GitHub/Render) НЕ касаемся — фича только демо.**
 
 ## Self-Review (заполняется автором плана)
 
