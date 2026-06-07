@@ -1331,6 +1331,10 @@ class BrigadeAssistant {
         this.workTypes.map(w => `<option value="${this.escapeHtml(w.name)}">${this.escapeHtml(w.name)}</option>`).join('');
       if (prev && this.workTypes.some(w => w.name === prev)) wSel.value = prev;
     }
+    // Клетки зависят от квартала: сбрасываем и, если квартал сохранён, перезагружаем.
+    const cSel = document.getElementById('rc-cell');
+    if (cSel) cSel.innerHTML = '<option value="">Клетка...</option>';
+    if (qSel && qSel.value) this.onReconcileQuarterChange();
     if (res && !this.estate) {
       res.style.display = 'block';
       res.innerHTML = '<p style="color:#888;padding:10px;">Сначала выбери хозяйство</p>';
@@ -1365,6 +1369,7 @@ class BrigadeAssistant {
       res.innerHTML = '<p style="color:#888;padding:10px;">Выбери квартал, клетку и вид работ</p>';
       return;
     }
+    res.innerHTML = '<p style="padding:10px;">⏳ Загрузка...</p>';
     try {
       const url = '/api/rows-status?estate=' + encodeURIComponent(this.estate) +
         '&quarter=' + encodeURIComponent(quarter) +
@@ -1387,7 +1392,7 @@ class BrigadeAssistant {
     const res = document.getElementById('reconcile-result');
     if (!res) return;
     const dispNote = data.disputedCount > 0
-      ? ` <span style="color:#c60;">· в т.ч. ${data.disputedCount} спорных — см. вкладку Спорные</span>`
+      ? ` <span style="color:#c60;">· в т.ч. ${Number(data.disputedCount)} спорных — см. вкладку Спорные</span>`
       : '';
     let summary;
     if (data.fullyDone) {
