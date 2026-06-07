@@ -16,6 +16,166 @@
 
 ---
 
+## ⚠️ ИТОГОВЫЙ КОД v2 (2026-06-07) — ПЕРЕКРЫВАЕТ блоки ниже, где расходится
+
+Решения Натали: (А) все культуры **с группировкой по культуре-заголовку**; механизированные (`measure_mode='hectares'`) — **отдельной плашкой** (`kind='mech'`, «сделано» = сумма колонки `hectares`), ручные ряды — своей (`kind='manual'`). `hours`/`kilometers` не входят. Поля строки: `{ estate, work_type, quarter, kind, done_ha, total_ha, remaining_ha }`. Тесты Task 1 Step 1 уже под это (12 шт). **Используй код ИЗ ЭТОГО раздела** (ниже по тексту блоки могут быть частично старыми).
+
+### `server/hectaresReport.js` (целиком)
+
+```js
+'use strict';
+
+function parseRowsCsv(s) {
+  return String(s || '').split(',').map(x => x.trim()).filter(Boolean);
+}
+const round2 = (n) => Math.round(n * 100) / 100;
+
+// Тип записи: механизированная (прямой ввод га) или ручная (ряды).
+function kindOf(measure_mode) {
+  return measure_mode === 'hectares' ? 'mech' : 'manual';
+}
+
+// logRows: [{ estate_id, work_type, quarter, cell, rows, measure_mode, hectares }] — площадные записи.
+// cellHa(estate, quarter, cell, uniqueRowsArr) -> га (может бросить -> клетку пропускаем).
+// quarterTotalHa(estate, quarter) -> вся площадь квартала, га.
+// Группировка по (тип, культура, вид, квартал). manual и mech одной пары — разные строки.
+function buildHectaresReport(logRows, cellHa, quarterTotalHa) {
+  const groups = new Map();
+  for (const r of logRows) {
+    const estate = r.estate_id;
+    const wt = (r.work_type && String(r.work_type).trim()) ? r.work_type : '(без вида работ)';
+    const quarter = String(r.quarter);
+    const kind = kindOf(r.measure_mode);
+    const key = `${kind} ${estate} ${wt} ${quarter}`;
+    let g = groups.get(key);
+    if (!g) { g = { kind, estate, work_type: wt, quarter, cells: new Map(), doneHa: 0 }; groups.set(key, g); }
+    if (kind === 'mech') {
+      const ha = Number(r.hectares);
+      if (isFinite(ha)) g.doneHa += ha;
+    } else {
+      const cell = String(r.cell);
+      let set = g.cells.get(cell);
+      if (!set) { set = new Set(); g.cells.set(cell, set); }
+      for (const num of parseRowsCsv(r.rows)) set.add(num);
+    }
+  }
+
+  const result = [];
+  for (const g of groups.values()) {
+    let done = 0;
+    if (g.kind === 'mech') {
+      done = g.doneHa;
+    } else {
+      for (const [cell, set] of g.cells) {
+        let ha;
+        try { ha = cellHa(g.estate, g.quarter, cell, Array.from(set)); }
+        catch { continue; }
+        if (isFinite(ha)) done += ha;
+      }
+    }
+    done = round2(done);
+    const total = round2(Number(quarterTotalHa(g.estate, g.quarter)) || 0);
+    const remaining = round2(Math.max(0, total - done));
+    result.push({ estate: g.estate, work_type: g.work_type, quarter: g.quarter,
+      kind: g.kind, done_ha: done, total_ha: total, remaining_ha: remaining });
+  }
+
+  const qnum = (q) => { const n = parseInt(q, 10); return Number.isNaN(n) ? Infinity : n; };
+  result.sort((a, b) =>
+    a.estate.localeCompare(b.estate, 'ru') ||
+    qnum(a.quarter) - qnum(b.quarter) ||
+    a.quarter.localeCompare(b.quarter, 'ru') ||
+    a.work_type.localeCompare(b.work_type, 'ru') ||
+    a.kind.localeCompare(b.kind));
+  return result;
+}
+
+module.exports = { buildHectaresReport, parseRowsCsv, kindOf };
+```
+
+### Endpoint `GET /api/report/hectares` — SQL выборки (вместо старой в Task 2)
+
+Запрос тянет ОБА типа площадных записей (ручные ряды + механизированные гектары):
+
+```js
+    // demo-ветка:
+    result = await pool.query(
+      `SELECT estate_id, quarter, cell, work_type, rows, measure_mode, hectares
+       FROM work_logs
+       WHERE demo_session_id = $1
+         AND ( (measure_mode IN ('rows_bushes','rows_only') AND rows IS NOT NULL AND rows <> '')
+            OR (measure_mode = 'hectares' AND hectares IS NOT NULL) )`,
+      [req.demo_session_id]
+    );
+```
+
+(в не-demo ветке — то же, но `WHERE brigadier_id = $1 AND (...)`). `cellHa`/`quarterTotalHa` и вызов `buildHectaresReport(result.rows, cellHa, quarterTotalHa)` — без изменений.
+
+### Клиент `renderPerformance()` — группировка по культуре + метка типа (вместо плоского списка в Task 3 Step 4)
+
+```js
+  renderPerformance() {
+    const filters = document.getElementById('perf-filters');
+    const list = document.getElementById('perf-list');
+    if (!filters || !list) return;
+    if (!this.perfRows || this.perfRows.length === 0) {
+      filters.innerHTML = '';
+      list.innerHTML = '<p style="color:#888;padding:10px;">Пока ничего не записано — заполни журнал, и тут появятся гектары.</p>';
+      return;
+    }
+    const allQ = [...new Set(this.perfRows.map(x => String(x.quarter)))]
+      .sort((a, b) => (parseInt(a, 10) || 0) - (parseInt(b, 10) || 0));
+    const allWt = [...new Set(this.perfRows.map(x => x.work_type))].sort((a, b) => a.localeCompare(b, 'ru'));
+    const chip = (kind, val, on) =>
+      `<button class="filter-chip ${on ? 'active' : ''}" onclick="app.togglePerfFilter('${kind}', '${this.escapeAttr(val)}')">${this.escapeHtml(val)}</button>`;
+    filters.innerHTML =
+      `<div class="perf-filter-row"><span class="filter-label">Виды работ:</span>` +
+      allWt.map(wt => chip('wt', wt, this.perfWorkTypes.has(wt))).join('') + `</div>` +
+      `<div class="perf-filter-row"><span class="filter-label">Кварталы:</span>` +
+      allQ.map(q => chip('q', q, this.perfQuarters.has(q))).join('') + `</div>`;
+
+    const shown = this.perfRows.filter(x =>
+      this.perfWorkTypes.has(x.work_type) && this.perfQuarters.has(String(x.quarter)));
+    if (shown.length === 0) {
+      list.innerHTML = '<p style="color:#888;padding:10px;">Ничего не выбрано в фильтрах.</p>';
+      return;
+    }
+    // Группировка по культуре (estate) с заголовком; порядок строк уже отсортирован сервером.
+    const byEstate = new Map();
+    for (const x of shown) {
+      if (!byEstate.has(x.estate)) byEstate.set(x.estate, []);
+      byEstate.get(x.estate).push(x);
+    }
+    let html = '';
+    for (const [estate, rows] of byEstate) {
+      html += `<div class="perf-culture-title">🌱 ${this.escapeHtml(estate)}</div>`;
+      html += rows.map(x => {
+        const kindLabel = x.kind === 'mech' ? 'механизировано' : 'ряды';
+        return `<div class="log-group">
+          <div><b>${this.escapeHtml(x.work_type)}</b> · Кв.${this.escapeHtml(String(x.quarter))} <span class="perf-kind">· ${kindLabel}</span></div>
+          <div style="margin-top:4px;">Сделано: <b>${x.done_ha}</b> га · Осталось: <b>${x.remaining_ha}</b> га</div>
+        </div>`;
+      }).join('');
+    }
+    list.innerHTML = html;
+  }
+```
+
+### Стили `public/styles.css` (вместо блока в Task 3 Step 6)
+
+```css
+.perf-filter-row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:6px 0; }
+.filter-label { color:#888; font-size:13px; margin-right:4px; }
+.filter-chip { padding:4px 10px; border:1px solid #ccc; border-radius:14px; background:#fff; font-size:13px; cursor:pointer; }
+.filter-chip.active { background:#2e7d32; color:#fff; border-color:#2e7d32; }
+.perf-culture-title { font-weight:600; margin:12px 0 4px; }
+.perf-kind { color:#888; font-size:12px; }
+```
+
+Task 1 Step 4 ожидание: PASS (12 тестов). Остальное в Task 1/2/3 ниже — фон/контекст; при расхождении приоритет у этого раздела.
+
+---
+
 ## File Structure
 
 - **Create:** `server/hectaresReport.js` — чистая функция агрегации (без БД, без Express). Единственная ответственность: из плоского списка записей + двух колбэков перевода построить строки отчёта.
@@ -40,55 +200,94 @@
 ```js
 const test = require('node:test');
 const assert = require('node:assert');
-const { buildHectaresReport, parseRowsCsv } = require('../server/hectaresReport');
+const { buildHectaresReport, parseRowsCsv, kindOf } = require('../server/hectaresReport');
 
 // Фейковые колбэки перевода: площадь клетки = (уникальных рядов) * 0.1 га;
-// всего по кварталу = 1 га на каждую известную клетку (по carte ниже).
+// всего по кварталу = 1 га для кв.2/кв.7, иначе 0.5 га.
 const fakeCellHa = (estate, q, c, rowsArr) => {
   if (c === 'NOHA') throw new Error('нет площади');
   return Math.round(rowsArr.length * 0.1 * 100) / 100;
 };
-const fakeQuarterTotalHa = (estate, q) => (q === '2' ? 1.0 : 0.5);
+const fakeQuarterTotalHa = (estate, q) => (q === '2' || q === '7' ? 1.0 : 0.5);
 
-test('дедупликация: один ряд, записанный двум рабочим, считается один раз', () => {
+test('kindOf: hectares -> mech, остальное -> manual', () => {
+  assert.strictEqual(kindOf('hectares'), 'mech');
+  assert.strictEqual(kindOf('rows_bushes'), 'manual');
+  assert.strictEqual(kindOf('rows_only'), 'manual');
+});
+
+test('manual: дедупликация — один ряд двум рабочим считается один раз', () => {
   const logs = [
-    { estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'A', rows: '1,2' },
-    { estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'A', rows: '2,3' },
+    { estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'A', rows: '1,2', measure_mode: 'rows_bushes' },
+    { estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'A', rows: '2,3', measure_mode: 'rows_bushes' },
   ];
   const out = buildHectaresReport(logs, fakeCellHa, fakeQuarterTotalHa);
   assert.strictEqual(out.length, 1);
-  // уникальные ряды {1,2,3} -> 3*0.1 = 0.3 га
-  assert.strictEqual(out[0].done_ha, 0.3);
+  assert.strictEqual(out[0].kind, 'manual');
+  assert.strictEqual(out[0].done_ha, 0.3); // {1,2,3} -> 3*0.1
   assert.strictEqual(out[0].total_ha, 1.0);
   assert.strictEqual(out[0].remaining_ha, 0.7);
 });
 
-test('накопление по разным датам/клеткам внутри пары вид×квартал', () => {
+test('manual: накопление по клеткам внутри пары вид×квартал', () => {
   const logs = [
-    { estate_id: 'Яблоня', work_type: 'Полив', quarter: '2', cell: 'A', rows: '1,2,3,4,5' },
-    { estate_id: 'Яблоня', work_type: 'Полив', quarter: '2', cell: 'B', rows: '1,2,3,4,5' },
+    { estate_id: 'Яблоня', work_type: 'Полив', quarter: '2', cell: 'A', rows: '1,2,3,4,5', measure_mode: 'rows_only' },
+    { estate_id: 'Яблоня', work_type: 'Полив', quarter: '2', cell: 'B', rows: '1,2,3,4,5', measure_mode: 'rows_only' },
   ];
   const out = buildHectaresReport(logs, fakeCellHa, fakeQuarterTotalHa);
   assert.strictEqual(out[0].done_ha, 1.0); // 0.5 + 0.5
   assert.strictEqual(out[0].remaining_ha, 0.0);
 });
 
-test('осталось зажато в 0, не уходит в минус', () => {
+test('manual: осталось зажато в 0, не уходит в минус', () => {
   const logs = [
-    { estate_id: 'Яблоня', work_type: 'Полив', quarter: '5', cell: 'A', rows: '1,2,3,4,5,6,7,8' },
+    { estate_id: 'Яблоня', work_type: 'Полив', quarter: '5', cell: 'A', rows: '1,2,3,4,5,6,7,8', measure_mode: 'rows_bushes' },
   ];
-  // done 0.8, total 0.5 -> remaining 0 (не -0.3)
   const out = buildHectaresReport(logs, fakeCellHa, fakeQuarterTotalHa);
-  assert.strictEqual(out[0].remaining_ha, 0.0);
+  assert.strictEqual(out[0].remaining_ha, 0.0); // done 0.8 > total 0.5 -> 0
 });
 
-test('клетка без площади пропускается, остальные считаются', () => {
+test('manual: клетка без площади пропускается, остальные считаются', () => {
   const logs = [
-    { estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'NOHA', rows: '1,2,3' },
-    { estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'A', rows: '1,2' },
+    { estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'NOHA', rows: '1,2,3', measure_mode: 'rows_bushes' },
+    { estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'A', rows: '1,2', measure_mode: 'rows_bushes' },
   ];
   const out = buildHectaresReport(logs, fakeCellHa, fakeQuarterTotalHa);
   assert.strictEqual(out[0].done_ha, 0.2); // только клетка A
+});
+
+test('mech: гектары суммируются напрямую, kind=mech', () => {
+  const logs = [
+    { estate_id: 'Яблоня', work_type: 'Вспашка', quarter: '2', cell: '', rows: '', measure_mode: 'hectares', hectares: 0.3 },
+    { estate_id: 'Яблоня', work_type: 'Вспашка', quarter: '2', cell: '', rows: '', measure_mode: 'hectares', hectares: 0.2 },
+  ];
+  const out = buildHectaresReport(logs, fakeCellHa, fakeQuarterTotalHa);
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].kind, 'mech');
+  assert.strictEqual(out[0].done_ha, 0.5); // 0.3 + 0.2
+  assert.strictEqual(out[0].total_ha, 1.0);
+  assert.strictEqual(out[0].remaining_ha, 0.5);
+});
+
+test('mech и manual для одной пары вид×квартал — две отдельные плашки', () => {
+  const logs = [
+    { estate_id: 'Яблоня', work_type: 'Обработка', quarter: '2', cell: 'A', rows: '1,2', measure_mode: 'rows_bushes' },
+    { estate_id: 'Яблоня', work_type: 'Обработка', quarter: '2', cell: '', rows: '', measure_mode: 'hectares', hectares: 0.4 },
+  ];
+  const out = buildHectaresReport(logs, fakeCellHa, fakeQuarterTotalHa);
+  assert.strictEqual(out.length, 2);
+  assert.deepStrictEqual(out.map(r => r.kind).sort(), ['manual', 'mech']);
+});
+
+test('несколько культур: одинаковый вид работ -> отдельные строки с разным estate', () => {
+  const logs = [
+    { estate_id: 'Яблоня',  work_type: 'Обрезка', quarter: '2', cell: 'A', rows: '1,2', measure_mode: 'rows_bushes' },
+    { estate_id: 'Виноград', work_type: 'Обрезка', quarter: '7', cell: 'A', rows: '1',  measure_mode: 'rows_bushes' },
+  ];
+  const out = buildHectaresReport(logs, fakeCellHa, fakeQuarterTotalHa);
+  assert.strictEqual(out.length, 2);
+  const estates = out.map(r => r.estate);
+  assert.ok(estates.includes('Яблоня') && estates.includes('Виноград'));
 });
 
 test('пустой ввод -> пустой массив', () => {
@@ -100,16 +299,16 @@ test('parseRowsCsv чистит пробелы и пустые', () => {
   assert.deepStrictEqual(parseRowsCsv(null), []);
 });
 
-test('сортировка: по estate, виду работ (ru), кварталу (числом)', () => {
+test('сортировка: по культуре, кварталу (числом), виду работ', () => {
   const logs = [
-    { estate_id: 'Яблоня', work_type: 'Полив', quarter: '10', cell: 'A', rows: '1' },
-    { estate_id: 'Яблоня', work_type: 'Полив', quarter: '2', cell: 'A', rows: '1' },
-    { estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'A', rows: '1' },
+    { estate_id: 'Яблоня', work_type: 'Полив',   quarter: '10', cell: 'A', rows: '1', measure_mode: 'rows_bushes' },
+    { estate_id: 'Яблоня', work_type: 'Полив',   quarter: '2',  cell: 'A', rows: '1', measure_mode: 'rows_bushes' },
+    { estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2',  cell: 'A', rows: '1', measure_mode: 'rows_bushes' },
   ];
   const out = buildHectaresReport(logs, fakeCellHa, fakeQuarterTotalHa);
   assert.deepStrictEqual(
-    out.map(r => `${r.work_type}|${r.quarter}`),
-    ['Обрезка|2', 'Полив|2', 'Полив|10']
+    out.map(r => `${r.quarter}|${r.work_type}`),
+    ['2|Обрезка', '2|Полив', '10|Полив']
   );
 });
 ```
@@ -133,26 +332,39 @@ function parseRowsCsv(s) {
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
-// Строит строки отчёта «Выполнение».
+// Тип записи: механизированная (прямой ввод га) или ручная (ряды).
+function kindOf(measure_mode) {
+  return measure_mode === 'hectares' ? 'mech' : 'manual';
+}
+
+// Строит строки отчёта «Выполнение». kind: 'manual' (ряды) | 'mech' (гектары).
+// logRows: [{ estate_id, work_type, quarter, cell, rows, measure_mode, hectares }].
+// cellHa/quarterTotalHa — колбэки перевода (см. ниже). Группировка по (тип,культура,вид,квартал).
 //   logRows: [{ estate_id, work_type, quarter, cell, rows(CSV) }] — записи work_logs c непустыми rows.
 //   cellHa(estate, quarter, cell, uniqueRowsArr) -> число га (может бросить -> клетку пропускаем).
 //   quarterTotalHa(estate, quarter) -> вся площадь квартала, га.
 // Возвращает [{ estate, work_type, quarter, done_ha, total_ha, remaining_ha }],
 // отсортированные по estate, виду работ (ru), кварталу (числом, затем строкой).
 function buildHectaresReport(logRows, cellHa, quarterTotalHa) {
-  // group[estate|wt|quarter] = { estate, work_type, quarter, cells: Map<cell, Set<row>> }
+  // manual: g.cells = Map<cell,Set<row>>; mech: g.doneHa = sum of hectares.
   const groups = new Map();
   for (const r of logRows) {
     const estate = r.estate_id;
     const wt = (r.work_type && String(r.work_type).trim()) ? r.work_type : '(без вида работ)';
     const quarter = String(r.quarter);
-    const cell = String(r.cell);
+    const kind = kindOf(r.measure_mode);
     const key = `${estate}${wt}${quarter}`;
     let g = groups.get(key);
-    if (!g) { g = { estate, work_type: wt, quarter, cells: new Map() }; groups.set(key, g); }
-    let set = g.cells.get(cell);
-    if (!set) { set = new Set(); g.cells.set(cell, set); }
-    for (const num of parseRowsCsv(r.rows)) set.add(num);
+    if (!g) { g = { kind, estate, work_type: wt, quarter, cells: new Map(), doneHa: 0 }; groups.set(key, g); }
+    if (kind === 'mech') {
+      const ha = Number(r.hectares);
+      if (isFinite(ha)) g.doneHa += ha;
+    } else {
+      const cell = String(r.cell);
+      let set = g.cells.get(cell);
+      if (!set) { set = new Set(); g.cells.set(cell, set); }
+      for (const num of parseRowsCsv(r.rows)) set.add(num);
+    }
   }
 
   const result = [];
@@ -180,7 +392,7 @@ function buildHectaresReport(logRows, cellHa, quarterTotalHa) {
   return result;
 }
 
-module.exports = { buildHectaresReport, parseRowsCsv };
+module.exports = { buildHectaresReport, parseRowsCsv, kindOf };
 ```
 
 - [ ] **Step 4: Запустить тест — убедиться, что проходит**
