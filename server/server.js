@@ -6,6 +6,7 @@ const { Pool } = require('pg');
 const fs = require('fs');
 const DataParser = require('./parser');
 const rowControl = require('./rowControl');
+const { buildHectaresReport } = require('./hectaresReport');
 const cookieParser = require('cookie-parser');
 const crypto = require('crypto');
 const auth = require('./auth');
@@ -1968,6 +1969,68 @@ app.get('/api/report', authOrDemo, async (req, res) => {
     res.json({ report });
   } catch (error) {
     console.error('Report error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Отчёт «Выполнение»: по культуре × вид работ × квартал — сколько гектаров сделано
+// (ручные ряды -> га + механизированные гектары) и сколько осталось до площади квартала.
+// Только просмотр; ввод остаётся как есть. Демо-only по смыслу, но пишем demo-aware.
+app.get('/api/report/hectares', authOrDemo, async (req, res) => {
+  try {
+    let parserToUse;
+    if (DEMO_MODE) {
+      parserToUse = new DataParser(await demo.getDemoInventory(pool, req.demo_session_id));
+    } else {
+      parserToUse = parser;
+    }
+
+    let result;
+    if (DEMO_MODE) {
+      result = await pool.query(
+        `SELECT estate_id, quarter, cell, work_type, rows, measure_mode, hectares
+         FROM work_logs
+         WHERE demo_session_id = $1
+           AND ( (measure_mode IN ('rows_bushes','rows_only') AND rows IS NOT NULL AND rows <> '')
+              OR (measure_mode = 'hectares' AND hectares IS NOT NULL) )`,
+        [req.demo_session_id]
+      );
+    } else {
+      result = await pool.query(
+        `SELECT estate_id, quarter, cell, work_type, rows, measure_mode, hectares
+         FROM work_logs
+         WHERE brigadier_id = $1
+           AND ( (measure_mode IN ('rows_bushes','rows_only') AND rows IS NOT NULL AND rows <> '')
+              OR (measure_mode = 'hectares' AND hectares IS NOT NULL) )`,
+        [req.brigadier.id]
+      );
+    }
+
+    // Перевод рядов клетки в га (бросает, если у клетки нет площади — агрегатор ловит).
+    const cellHa = (estate, quarter, cell, rowsArr) =>
+      parserToUse.getHectaresForRows(estate, String(quarter), String(cell), rowsArr);
+
+    // Вся площадь квартала = сумма hectares известных клеток квартала из инвентаря.
+    const quarterTotalHa = (estate, quarter) => {
+      const edata = parserToUse.inventory && parserToUse.inventory.estates
+        ? parserToUse.inventory.estates[estate] : null;
+      if (!edata) return 0;
+      const qdata = edata.quarters[String(quarter)];
+      if (!qdata || !qdata.cells) return 0;
+      let sum = 0;
+      for (const ck of Object.keys(qdata.cells)) {
+        const cellData = qdata.cells[ck];
+        const ha = (cellData && typeof cellData === 'object' && !Array.isArray(cellData))
+          ? cellData.hectares : null;
+        if (ha != null && isFinite(Number(ha))) sum += Number(ha);
+      }
+      return sum;
+    };
+
+    const rows = buildHectaresReport(result.rows, cellHa, quarterTotalHa);
+    res.json({ rows });
+  } catch (error) {
+    console.error('Hectares report error:', error);
     res.status(500).json({ error: error.message });
   }
 });
