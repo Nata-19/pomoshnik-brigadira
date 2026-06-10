@@ -2101,11 +2101,14 @@ class BrigadeAssistant {
   // Загружает отчёт «Выполнение» (га сделано/осталось) и рисует с фильтрами.
   async loadPerformance() {
     const list = document.getElementById('perf-list');
+    const filters = document.getElementById('perf-filters');
     if (!list) return;
+    list.innerHTML = '<p style="padding:10px;">⏳ Загрузка...</p>';
     try {
       const r = await this.apiFetch('/api/report/hectares');
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
+        if (filters) filters.innerHTML = '';
         list.innerHTML = `<p style="color:#c00;padding:10px;">${this.escapeHtml(data.error || 'Ошибка')}</p>`;
         return;
       }
@@ -2114,6 +2117,7 @@ class BrigadeAssistant {
       this.perfWorkTypes = new Set(this.perfRows.map(x => x.work_type));
       this.renderPerformance();
     } catch (e) {
+      if (filters) filters.innerHTML = '';
       list.innerHTML = `<p style="color:#c00;padding:10px;">${this.escapeHtml(e.message)}</p>`;
     }
   }
@@ -2335,7 +2339,7 @@ class BrigadeAssistant {
 
   // Экранирует значение для подстановки в одинарные кавычки onclick-атрибута.
   escapeAttr(s) {
-    return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    return String(s).replace(/&/g, '&amp;').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
   }
 
   async getReport() {
