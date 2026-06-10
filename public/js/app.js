@@ -2169,7 +2169,7 @@ class BrigadeAssistant {
         const kindLabel = x.kind === 'mech' ? 'механизировано' : 'ряды';
         return `<div class="log-group">
           <div><b>${this.escapeHtml(x.work_type)}</b> · Кв.${this.escapeHtml(String(x.quarter))} <span class="perf-kind">· ${kindLabel}</span></div>
-          <div style="margin-top:4px;">Сделано: <b>${x.done_ha}</b> га · Осталось: <b>${x.remaining_ha}</b> га</div>
+          <div style="margin-top:4px;">Сделано: <b>${Number(x.done_ha).toFixed(2)}</b> га · Осталось: <b>${Number(x.remaining_ha).toFixed(2)}</b> га</div>
         </div>`;
       }).join('');
     }
