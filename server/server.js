@@ -1434,25 +1434,33 @@ app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
         if (firstRec.rows[0].employee === employee.trim()) {
           return res.status(400).json({ error: 'Ряд уже записан на этого рабочего' });
         }
-        const removed = await applyRowRemoval(pool, owner.col, owner.val, fid, rowNum, rowBushes);
-        if (!removed) {
-          return res.status(409).json({ error: 'Ряд уже снят с первого рабочего' });
-        }
-        // Ряд целиком — второму рабочему (одна плашка: слияние с его записью).
-        await upsertWorkLog(pool, owner.col, owner.val, req, ctx, employee.trim(), rowNum, rowBushes, 1);
+        await withTransaction(pool, async (client) => {
+          const removed = await applyRowRemoval(client, owner.col, owner.val, fid, rowNum, rowBushes);
+          if (!removed) {
+            const e = new Error('Ряд уже снят с первого рабочего');
+            e.httpStatus = 409;
+            throw e;
+          }
+          // Ряд целиком — второму рабочему (одна плашка: слияние с его записью).
+          await upsertWorkLog(client, owner.col, owner.val, req, ctx, employee.trim(), rowNum, rowBushes, 1);
+        });
         return res.json({ success: true });
       }
 
       // postpone: снимаем ряд с первого; если снять нечего — 409; иначе в «Спорные».
-      const removed = await applyRowRemoval(pool, owner.col, owner.val, fid, rowNum, rowBushes);
-      if (!removed) {
-        return res.status(409).json({ error: 'Ряд уже снят с первого рабочего' });
-      }
-      await insertDisputed(pool, {
-        estate, quarter: String(quarter), cell: String(cell),
-        work_type: work_type.trim(), row_num: rowNum, measure_mode,
-        claimed_by: firstRec.rows[0].employee, claimed_date: firstRec.rows[0].date,
-      }, owner, req);
+      await withTransaction(pool, async (client) => {
+        const removed = await applyRowRemoval(client, owner.col, owner.val, fid, rowNum, rowBushes);
+        if (!removed) {
+          const e = new Error('Ряд уже снят с первого рабочего');
+          e.httpStatus = 409;
+          throw e;
+        }
+        await insertDisputed(client, {
+          estate, quarter: String(quarter), cell: String(cell),
+          work_type: work_type.trim(), row_num: rowNum, measure_mode,
+          claimed_by: firstRec.rows[0].employee, claimed_date: firstRec.rows[0].date,
+        }, owner, req);
+      });
       return res.json({ success: true });
     }
 
@@ -1501,32 +1509,39 @@ app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
       // при делении «другой день» запись занявшего лежит на другую дату, а при
       // повторном делении держателей может быть несколько. id уникален, разрез
       // (владелец+хозяйство+квартал+клетка+вид работ+режим) ограничивает выборку.
-      const holders = await pool.query(
-        `SELECT id, rows FROM work_logs
-         WHERE ${owner.col} = $1 AND estate_id = $2
-           AND quarter = $3 AND cell = $4 AND work_type = $5 AND measure_mode = $6`,
-        [owner.val, estate, String(quarter), String(cell), work_type.trim(), measure_mode]
-      );
-      let strippedAny = false;
-      for (const h of holders.rows) {
-        const nums = String(h.rows || '').split(',').map((s) => parseInt(s, 10)).filter((n) => Number.isInteger(n));
-        if (nums.includes(rowNum)) {
-          const ok = await applyRowRemoval(pool, owner.col, owner.val, h.id, rowNum, rowBushes);
-          if (ok) strippedAny = true;
+      await withTransaction(pool, async (client) => {
+        const holders = await client.query(
+          `SELECT id, rows FROM work_logs
+           WHERE ${owner.col} = $1 AND estate_id = $2
+             AND quarter = $3 AND cell = $4 AND work_type = $5 AND measure_mode = $6`,
+          [owner.val, estate, String(quarter), String(cell), work_type.trim(), measure_mode]
+        );
+        let strippedAny = false;
+        for (const h of holders.rows) {
+          const nums = String(h.rows || '').split(',').map((s) => parseInt(s, 10)).filter((n) => Number.isInteger(n));
+          if (nums.includes(rowNum)) {
+            const ok = await applyRowRemoval(client, owner.col, owner.val, h.id, rowNum, rowBushes);
+            if (ok) strippedAny = true;
+          }
         }
-      }
-      if (!strippedAny) {
-        return res.status(409).json({ error: 'Ряд уже снят' });
-      }
+        if (!strippedAny) {
+          const e = new Error('Ряд уже снят');
+          e.httpStatus = 409;
+          throw e;
+        }
 
-      for (const a of toAssign) {
-        await upsertWorkLog(pool, owner.col, owner.val, req, ctx, a.employee, rowNum, a.bushes, a.weight);
-      }
+        for (const a of toAssign) {
+          await upsertWorkLog(client, owner.col, owner.val, req, ctx, a.employee, rowNum, a.bushes, a.weight);
+        }
+      });
       return res.json({ success: true });
     }
 
     return res.status(400).json({ error: 'Неизвестное действие' });
   } catch (error) {
+    if (error && error.httpStatus) {
+      return res.status(error.httpStatus).json({ error: error.message });
+    }
     console.error('Resolve error:', error);
     res.status(500).json({ error: error.message });
   }
