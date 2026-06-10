@@ -6,6 +6,7 @@ const { Pool } = require('pg');
 const fs = require('fs');
 const DataParser = require('./parser');
 const rowControl = require('./rowControl');
+const { withTransaction } = require('./db');
 const cookieParser = require('cookie-parser');
 const crypto = require('crypto');
 const auth = require('./auth');
@@ -996,8 +997,8 @@ function rowOwner(req) {
 // если рядов не осталось — удаляет запись, иначе обновляет rows + bushes.
 // removedRowBushes — кусты ряда по инвентаризации (rows_only → 0). Возвращает true,
 // если запись найдена и обработана, иначе false.
-async function applyRowRemoval(ownerCol, ownerVal, logId, rowNum, rowBushes) {
-  const rec = await pool.query(
+async function applyRowRemoval(db, ownerCol, ownerVal, logId, rowNum, rowBushes) {
+  const rec = await db.query(
     `SELECT rows, row_weights, bushes FROM work_logs WHERE id = $1 AND ${ownerCol} = $2`,
     [logId, ownerVal]
   );
@@ -1007,9 +1008,9 @@ async function applyRowRemoval(ownerCol, ownerVal, logId, rowNum, rowBushes) {
   );
   if (!out.found) return false;
   if (out.deleted) {
-    await pool.query(`DELETE FROM work_logs WHERE id = $1 AND ${ownerCol} = $2`, [logId, ownerVal]);
+    await db.query(`DELETE FROM work_logs WHERE id = $1 AND ${ownerCol} = $2`, [logId, ownerVal]);
   } else {
-    await pool.query(
+    await db.query(
       `UPDATE work_logs SET rows = $1, row_weights = $2, bushes = $3 WHERE id = $4 AND ${ownerCol} = $5`,
       [out.rows, out.weights, out.bushes, logId, ownerVal]
     );
@@ -1018,9 +1019,9 @@ async function applyRowRemoval(ownerCol, ownerVal, logId, rowNum, rowBushes) {
 }
 
 // Заносит ряд в disputed_rows с учётом владельца (демо — по сессии, прод — по бригадиру).
-async function insertDisputed(d, owner, req) {
+async function insertDisputed(db, d, owner, req) {
   if (DEMO_MODE) {
-    await pool.query(
+    await db.query(
       `INSERT INTO disputed_rows
         (estate_id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date, demo_session_id, brigadier_id)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
@@ -1029,7 +1030,7 @@ async function insertDisputed(d, owner, req) {
     );
     return;
   }
-  await pool.query(
+  await db.query(
     `INSERT INTO disputed_rows
       (estate_id, quarter, cell, work_type, row_num, measure_mode, claimed_by, claimed_date, brigadier_id)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
@@ -1043,8 +1044,8 @@ async function insertDisputed(d, owner, req) {
 // разрезе и дате — ряд добавляется к ней и кусты прибавляются; иначе создаётся
 // новая запись на один ряд. Демо/прод по DEMO_MODE.
 // ctx: { date, estate, quarter, cell, work_type, measure_mode }.
-async function upsertWorkLog(ownerCol, ownerVal, req, ctx, emp, rowNum, bushes, weight) {
-  const ex = await pool.query(
+async function upsertWorkLog(db, ownerCol, ownerVal, req, ctx, emp, rowNum, bushes, weight) {
+  const ex = await db.query(
     `SELECT id, rows, row_weights, bushes FROM work_logs
      WHERE ${ownerCol} = $1 AND date = $2 AND estate_id = $3 AND quarter = $4
        AND cell = $5 AND work_type = $6 AND measure_mode = $7 AND employee = $8
@@ -1058,7 +1059,7 @@ async function upsertWorkLog(ownerCol, ownerVal, req, ctx, emp, rowNum, bushes, 
     nums.sort((a, b) => a - b);
     const w = rowControl.parseRowWeights(rec.row_weights);
     w[rowNum] = weight;
-    await pool.query(
+    await db.query(
       `UPDATE work_logs SET rows = $1, row_weights = $2, bushes = $3 WHERE id = $4 AND ${ownerCol} = $5`,
       [nums.join(','), rowControl.serializeRowWeights(w), (rec.bushes || 0) + bushes, rec.id, ownerVal]
     );
@@ -1066,14 +1067,14 @@ async function upsertWorkLog(ownerCol, ownerVal, req, ctx, emp, rowNum, bushes, 
   }
   const wjson = rowControl.serializeRowWeights({ [rowNum]: weight });
   if (DEMO_MODE) {
-    await pool.query(
+    await db.query(
       `INSERT INTO work_logs
         (date, estate_id, quarter, cell, employee, rows, row_weights, bushes, brigadier_id, demo_session_id, work_type, measure_mode, hours)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
       [ctx.date, ctx.estate, String(ctx.quarter), String(ctx.cell), emp, String(rowNum), wjson, bushes, 0, req.demo_session_id, ctx.work_type, ctx.measure_mode, null]
     );
   } else {
-    await pool.query(
+    await db.query(
       `INSERT INTO work_logs
         (date, estate_id, quarter, cell, employee, rows, row_weights, bushes, brigadier_id, work_type, measure_mode, hours)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
@@ -1327,21 +1328,21 @@ app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
         if (firstRec.rows[0].employee === employee.trim()) {
           return res.status(400).json({ error: 'Ряд уже записан на этого рабочего' });
         }
-        const removed = await applyRowRemoval(owner.col, owner.val, fid, rowNum, rowBushes);
+        const removed = await applyRowRemoval(pool, owner.col, owner.val, fid, rowNum, rowBushes);
         if (!removed) {
           return res.status(409).json({ error: 'Ряд уже снят с первого рабочего' });
         }
         // Ряд целиком — второму рабочему (одна плашка: слияние с его записью).
-        await upsertWorkLog(owner.col, owner.val, req, ctx, employee.trim(), rowNum, rowBushes, 1);
+        await upsertWorkLog(pool, owner.col, owner.val, req, ctx, employee.trim(), rowNum, rowBushes, 1);
         return res.json({ success: true });
       }
 
       // postpone: снимаем ряд с первого; если снять нечего — 409; иначе в «Спорные».
-      const removed = await applyRowRemoval(owner.col, owner.val, fid, rowNum, rowBushes);
+      const removed = await applyRowRemoval(pool, owner.col, owner.val, fid, rowNum, rowBushes);
       if (!removed) {
         return res.status(409).json({ error: 'Ряд уже снят с первого рабочего' });
       }
-      await insertDisputed({
+      await insertDisputed(pool, {
         estate, quarter: String(quarter), cell: String(cell),
         work_type: work_type.trim(), row_num: rowNum, measure_mode,
         claimed_by: firstRec.rows[0].employee, claimed_date: firstRec.rows[0].date,
@@ -1404,7 +1405,7 @@ app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
       for (const h of holders.rows) {
         const nums = String(h.rows || '').split(',').map((s) => parseInt(s, 10)).filter((n) => Number.isInteger(n));
         if (nums.includes(rowNum)) {
-          const ok = await applyRowRemoval(owner.col, owner.val, h.id, rowNum, rowBushes);
+          const ok = await applyRowRemoval(pool, owner.col, owner.val, h.id, rowNum, rowBushes);
           if (ok) strippedAny = true;
         }
       }
@@ -1413,7 +1414,7 @@ app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
       }
 
       for (const a of toAssign) {
-        await upsertWorkLog(owner.col, owner.val, req, ctx, a.employee, rowNum, a.bushes, a.weight);
+        await upsertWorkLog(pool, owner.col, owner.val, req, ctx, a.employee, rowNum, a.bushes, a.weight);
       }
       return res.json({ success: true });
     }
@@ -1616,7 +1617,7 @@ app.post('/api/disputed/:id/resolve', authOrDemo, async (req, res) => {
       cell: d.cell, work_type: d.work_type, measure_mode: d.measure_mode,
     };
     for (const a of toInsert) {
-      await upsertWorkLog(owner.col, owner.val, req, ctx, a.employee, d.row_num, a.bushes, a.weight);
+      await upsertWorkLog(pool, owner.col, owner.val, req, ctx, a.employee, d.row_num, a.bushes, a.weight);
     }
 
     await pool.query(
