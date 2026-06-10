@@ -1151,3 +1151,10 @@ button:active {
     font-size: 15px;
     cursor: pointer;
 }
+
+.perf-filter-row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:6px 0; }
+.filter-label { color:#888; font-size:13px; margin-right:4px; }
+.filter-chip { padding:4px 10px; border:1px solid #ccc; border-radius:14px; background:#fff; font-size:13px; cursor:pointer; }
+.filter-chip.active { background:#2e7d32; color:#fff; border-color:#2e7d32; }
+.perf-culture-title { font-weight:600; margin:12px 0 4px; }
+.perf-kind { color:#888; font-size:12px; }

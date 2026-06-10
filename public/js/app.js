@@ -19,6 +19,9 @@ class BrigadeAssistant {
     this.selectedEmployeeId = null;
     this.rosterOpen = false;
     this.adding = false;          // защита от двойного «Добавить»
+    this.perfRows = [];
+    this.perfQuarters = new Set();
+    this.perfWorkTypes = new Set();
     this.init();
   }
 
@@ -507,6 +510,7 @@ class BrigadeAssistant {
           <button class="tab-button" onclick="app.switchTab(event, 'logs'); app.loadLogs()">Журнал</button>
           <button class="tab-button" onclick="app.switchTab(event, 'disputed'); app.loadDisputed()">Спорные</button>
           <button class="tab-button" onclick="app.switchTab(event, 'reconcile'); app.onReconcileTabOpen()">Сверка</button>
+          <button class="tab-button" onclick="app.switchTab(event, 'perf'); app.loadPerformance()">Выполнение</button>
           ${this.me && this.me.is_admin ? `<button class="tab-button" onclick="app.switchTab(event, 'admin'); app.loadBrigadiers()">Админ</button>` : ''}
         </div>
 
@@ -561,6 +565,12 @@ class BrigadeAssistant {
             <button onclick="app.loadRowsStatus()">Показать</button>
           </div>
           <div id="reconcile-result" class="result" style="display:none;"></div>
+        </div>
+
+        <div class="tab-content" id="perf-tab">
+          <button onclick="app.loadPerformance()">Обновить</button>
+          <div id="perf-filters"></div>
+          <div id="perf-list" class="logs-list"></div>
         </div>
 
         ${this.me && this.me.is_admin ? `
@@ -2088,6 +2098,80 @@ class BrigadeAssistant {
     res.innerHTML = summary + listHtml;
   }
 
+  // Загружает отчёт «Выполнение» (га сделано/осталось) и рисует с фильтрами.
+  async loadPerformance() {
+    const list = document.getElementById('perf-list');
+    if (!list) return;
+    try {
+      const r = await this.apiFetch('/api/report/hectares');
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        list.innerHTML = `<p style="color:#c00;padding:10px;">${this.escapeHtml(data.error || 'Ошибка')}</p>`;
+        return;
+      }
+      this.perfRows = data.rows || [];
+      this.perfQuarters = new Set(this.perfRows.map(x => String(x.quarter)));
+      this.perfWorkTypes = new Set(this.perfRows.map(x => x.work_type));
+      this.renderPerformance();
+    } catch (e) {
+      list.innerHTML = `<p style="color:#c00;padding:10px;">${this.escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  // Переключает чип-фильтр (квартал 'q' или вид работ 'wt') и перерисовывает.
+  togglePerfFilter(kind, value) {
+    const set = kind === 'q' ? this.perfQuarters : this.perfWorkTypes;
+    if (set.has(value)) set.delete(value); else set.add(value);
+    this.renderPerformance();
+  }
+
+  // Рендер: чипы фильтров + строки, сгруппированные по культуре (estate),
+  // каждая плашка помечена типом (ряды/механизировано).
+  renderPerformance() {
+    const filters = document.getElementById('perf-filters');
+    const list = document.getElementById('perf-list');
+    if (!filters || !list) return;
+    if (!this.perfRows || this.perfRows.length === 0) {
+      filters.innerHTML = '';
+      list.innerHTML = '<p style="color:#888;padding:10px;">Пока ничего не записано — заполни журнал, и тут появятся гектары.</p>';
+      return;
+    }
+    const allQ = [...new Set(this.perfRows.map(x => String(x.quarter)))]
+      .sort((a, b) => (parseInt(a, 10) || 0) - (parseInt(b, 10) || 0));
+    const allWt = [...new Set(this.perfRows.map(x => x.work_type))].sort((a, b) => a.localeCompare(b, 'ru'));
+    const chip = (kind, val, on) =>
+      `<button class="filter-chip ${on ? 'active' : ''}" onclick="app.togglePerfFilter('${kind}', '${this.escapeAttr(val)}')">${this.escapeHtml(val)}</button>`;
+    filters.innerHTML =
+      `<div class="perf-filter-row"><span class="filter-label">Виды работ:</span>` +
+      allWt.map(wt => chip('wt', wt, this.perfWorkTypes.has(wt))).join('') + `</div>` +
+      `<div class="perf-filter-row"><span class="filter-label">Кварталы:</span>` +
+      allQ.map(q => chip('q', q, this.perfQuarters.has(q))).join('') + `</div>`;
+
+    const shown = this.perfRows.filter(x =>
+      this.perfWorkTypes.has(x.work_type) && this.perfQuarters.has(String(x.quarter)));
+    if (shown.length === 0) {
+      list.innerHTML = '<p style="color:#888;padding:10px;">Ничего не выбрано в фильтрах.</p>';
+      return;
+    }
+    const byEstate = new Map();
+    for (const x of shown) {
+      if (!byEstate.has(x.estate)) byEstate.set(x.estate, []);
+      byEstate.get(x.estate).push(x);
+    }
+    let html = '';
+    for (const [estate, rows] of byEstate) {
+      html += `<div class="perf-culture-title">🌱 ${this.escapeHtml(estate)}</div>`;
+      html += rows.map(x => {
+        const kindLabel = x.kind === 'mech' ? 'механизировано' : 'ряды';
+        return `<div class="log-group">
+          <div><b>${this.escapeHtml(x.work_type)}</b> · Кв.${this.escapeHtml(String(x.quarter))} <span class="perf-kind">· ${kindLabel}</span></div>
+          <div style="margin-top:4px;">Сделано: <b>${x.done_ha}</b> га · Осталось: <b>${x.remaining_ha}</b> га</div>
+        </div>`;
+      }).join('');
+    }
+    list.innerHTML = html;
+  }
+
   // Открывает модалку выбора рабочих (одного или нескольких) с долями кустов,
   // затем отправляет разбор. Деление — выбор бригадира: отметил несколько → кусты
   // делятся (пустые доли = поровну, остаток первым).
@@ -2247,6 +2331,11 @@ class BrigadeAssistant {
     return String(s).replace(/[&<>"']/g, c => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     })[c]);
+  }
+
+  // Экранирует значение для подстановки в одинарные кавычки onclick-атрибута.
+  escapeAttr(s) {
+    return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
   }
 
   async getReport() {
