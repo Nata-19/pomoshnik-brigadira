@@ -18,17 +18,17 @@ function buildHectaresReport(logRows, cellHa, quarterTotalHa) {
   const groups = new Map();
   for (const r of logRows) {
     const estate = r.estate_id;
-    const wt = (r.work_type && String(r.work_type).trim()) ? r.work_type : '(без вида работ)';
+    const wt = String(r.work_type || '').trim() || '(без вида работ)';
     const quarter = String(r.quarter);
     const kind = kindOf(r.measure_mode);
-    const key = `${kind} ${estate} ${wt} ${quarter}`;
+    const key = [kind, estate, wt, quarter].join('\x00');
     let g = groups.get(key);
     if (!g) { g = { kind, estate, work_type: wt, quarter, cells: new Map(), doneHa: 0 }; groups.set(key, g); }
     if (kind === 'mech') {
       const ha = Number(r.hectares);
-      if (isFinite(ha)) g.doneHa += ha;
+      if (isFinite(ha) && ha > 0) g.doneHa += ha;
     } else {
-      const cell = String(r.cell);
+      const cell = String(r.cell ?? '');
       let set = g.cells.get(cell);
       if (!set) { set = new Set(); g.cells.set(cell, set); }
       for (const num of parseRowsCsv(r.rows)) set.add(num);

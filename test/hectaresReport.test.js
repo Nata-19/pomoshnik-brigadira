@@ -14,6 +14,7 @@ test('kindOf: hectares -> mech, остальное -> manual', () => {
   assert.strictEqual(kindOf('hectares'), 'mech');
   assert.strictEqual(kindOf('rows_bushes'), 'manual');
   assert.strictEqual(kindOf('rows_only'), 'manual');
+  assert.strictEqual(kindOf(undefined), 'manual');
 });
 
 test('manual: дедупликация — один ряд двум рабочим считается один раз', () => {
@@ -97,6 +98,7 @@ test('пустой ввод -> пустой массив', () => {
 test('parseRowsCsv чистит пробелы и пустые', () => {
   assert.deepStrictEqual(parseRowsCsv(' 1, 2 ,,3 '), ['1', '2', '3']);
   assert.deepStrictEqual(parseRowsCsv(null), []);
+  assert.deepStrictEqual(parseRowsCsv(undefined), []);
 });
 
 test('сортировка: по культуре, кварталу (числом), виду работ', () => {
@@ -110,4 +112,15 @@ test('сортировка: по культуре, кварталу (число�
     out.map(r => `${r.quarter}|${r.work_type}`),
     ['2|Обрезка', '2|Полив', '10|Полив']
   );
+});
+
+test('mech: нечисловые и отрицательные гектары игнорируются', () => {
+  const logs = [
+    { estate_id: 'Яблоня', work_type: 'Вспашка', quarter: '2', cell: '', rows: '', measure_mode: 'hectares', hectares: 0.3 },
+    { estate_id: 'Яблоня', work_type: 'Вспашка', quarter: '2', cell: '', rows: '', measure_mode: 'hectares', hectares: -0.5 },
+    { estate_id: 'Яблоня', work_type: 'Вспашка', quarter: '2', cell: '', rows: '', measure_mode: 'hectares', hectares: NaN },
+  ];
+  const out = buildHectaresReport(logs, fakeCellHa, fakeQuarterTotalHa);
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].done_ha, 0.3);
 });
