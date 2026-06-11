@@ -3,9 +3,9 @@
 
 const DEMO_MODE = process.env.DEMO_MODE === 'true';
 
-const BRAND_NAME = DEMO_MODE ? 'Демо Помощник' : 'Помощьник Бригадира';
-const BRAND_LOGO = DEMO_MODE ? '🌱' : '🍇';
-const CONTACT_PHONE = '+79783116389';
+const BRAND_NAME = process.env.BRAND_NAME || (DEMO_MODE ? 'Демо Помощник' : 'Помощьник Бригадира');
+const BRAND_LOGO = process.env.BRAND_LOGO || (DEMO_MODE ? '🌱' : '🍇');
+const CONTACT_PHONE = process.env.CONTACT_PHONE || '+79783116389';
 
 // Список единиц измерения, доступных в текущем режиме.
 // В демо — 5 базовых, в проде — все 11. Расширенные «продаются» как
@@ -17,7 +17,9 @@ const MEASURE_MODES_ALL = [
   'rows_bushes', 'rows_only', 'hours', 'hectares', 'kilometers',
   'poles', 'tons', 'linear_meters', 'tons_km', 'hours_km', 'hectares_tons',
 ];
-const MEASURE_MODES = DEMO_MODE ? MEASURE_MODES_DEMO : MEASURE_MODES_PROD;
+const MEASURE_MODES = process.env.MEASURE_MODES
+  ? process.env.MEASURE_MODES.split(',').map(m => m.trim()).filter(m => MEASURE_MODES_ALL.includes(m))
+  : (DEMO_MODE ? MEASURE_MODES_DEMO : MEASURE_MODES_PROD);
 
 // TTL демо-сессии в миллисекундах (24 часа).
 const DEMO_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
