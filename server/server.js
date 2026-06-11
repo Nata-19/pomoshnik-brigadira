@@ -1737,16 +1737,20 @@ app.post('/api/disputed/:id/resolve', authOrDemo, async (req, res) => {
       date: resolveDate, estate: d.estate_id, quarter: d.quarter,
       cell: d.cell, work_type: d.work_type, measure_mode: d.measure_mode,
     };
-    for (const a of toInsert) {
-      await upsertWorkLog(pool, owner.col, owner.val, req, ctx, a.employee, d.row_num, a.bushes, a.weight);
-    }
-
-    await pool.query(
-      `DELETE FROM disputed_rows WHERE id = $1 AND ${owner.col} = $2`,
-      [id, owner.val]
-    );
+    await withTransaction(pool, async (client) => {
+      for (const a of toInsert) {
+        await upsertWorkLog(client, owner.col, owner.val, req, ctx, a.employee, d.row_num, a.bushes, a.weight);
+      }
+      await client.query(
+        `DELETE FROM disputed_rows WHERE id = $1 AND ${owner.col} = $2`,
+        [id, owner.val]
+      );
+    });
     res.json({ success: true });
   } catch (error) {
+    if (error && error.httpStatus) {
+      return res.status(error.httpStatus).json({ error: error.message });
+    }
     console.error('Disputed resolve error:', error);
     res.status(500).json({ error: error.message });
   }
