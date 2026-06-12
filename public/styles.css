@@ -1050,6 +1050,13 @@ button:active {
   line-height: 1.4;
 }
 
+.rows-warn {
+  color: #b45309;
+  font-size: 0.85em;
+  margin-top: 4px;
+  min-height: 1.2em;
+}
+
 /* Модалка разрешения конфликта рядов (работает в установленном PWA) */
 .modal-overlay {
     position: fixed;

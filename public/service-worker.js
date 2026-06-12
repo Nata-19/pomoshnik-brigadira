@@ -1,4 +1,4 @@
-const CACHE_NAME = 'brigade-v22';
+const CACHE_NAME = 'brigade-v23';
 const urlsToCache = [
   '/',
   '/index.html',
