@@ -1538,7 +1538,8 @@ class BrigadeAssistant {
     for (const part of val.split(/[,.;\s]+/).filter(Boolean)) {
       const range = part.match(/^(\d+)-(\d+)$/);
       if (range) {
-        for (let i = +range[1]; i <= +range[2]; i++) nums.push(i);
+        const [lo, hi] = [+range[1], +range[2]];
+        if (lo <= hi) for (let i = lo; i <= hi; i++) nums.push(i);
       } else if (/^\d+$/.test(part)) {
         nums.push(+part);
       }
