@@ -5,6 +5,7 @@ class BrigadeAssistant {
     this.estate = localStorage.getItem('selectedEstate') || '';
     this.quarters = [];
     this.cellsByQuarter = {}; // кэш клеток по (estate|quarter)
+    this.cellMaxRow = {};     // кэш: "estate|quarter|cell" → макс. ряд
     // Этап 2 — структурированный ввод
     this.employees = [];          // [{id, name}] — полный список бригады
     this.workTypes = [];          // [{id, name}] — общий список видов работ
@@ -13,6 +14,7 @@ class BrigadeAssistant {
     this.inputDate = this.getTodayDate();
     this.ctxQuarter = '';         // «держащийся» контекст
     this.ctxCell = '';
+    this.ctxCellMaxRow = null;    // макс. ряд выбранной клетки (из инвентаря)
     this.ctxCells = [];           // мульти-выбор клеток для режима «Гектары»
     this.ctxWorkType = '';
     this.measureMode = 'rows_bushes';
@@ -143,6 +145,13 @@ class BrigadeAssistant {
       const data = await r.json();
       const cells = Object.keys(data.cells || {}).sort((a, b) => +a - +b);
       this.cellsByQuarter[key] = cells;
+      for (const [cell, cellData] of Object.entries(data.cells || {})) {
+        const rows = Array.isArray(cellData) ? cellData : (cellData.rows || []);
+        if (rows.length) {
+          this.cellMaxRow[this.estate + '|' + quarterId + '|' + cell] =
+            Math.max(...rows.map(r => typeof r === 'object' ? r.row : r));
+        }
+      }
       return cells;
     } catch (e) {
       return [];
@@ -1510,6 +1519,7 @@ class BrigadeAssistant {
 
   onI2CellChange() {
     this.ctxCell = document.getElementById('i2-cell').value;
+    this.ctxCellMaxRow = this.cellMaxRow[this.estate + '|' + this.ctxQuarter + '|' + this.ctxCell] ?? null;
   }
 
   onI2WorkTypeChange(kind) {
