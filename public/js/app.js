@@ -704,7 +704,7 @@ class BrigadeAssistant {
           : this.measureMode === 'kilometers'
             ? '<div class="form-group"><label>Километры:</label><input type="number" id="i2-kilometers" min="0.01" step="0.01" inputmode="decimal"></div>'
           : (this.measureMode === 'rows_bushes' || this.measureMode === 'rows_only' || this.measureMode === 'hectares')
-            ? `<div class="form-group"><label>Ряды (например: 1-5, 9, 11 или 1-5.9.11):</label><input type="text" id="i2-rows" inputmode="numeric">${this.measureMode === 'hectares' ? '<div class="measure-hint">Гектары посчитаются автоматически из выбранных рядов и площади клетки.</div>' : ''}</div>`
+            ? `<div class="form-group"><label>Ряды (например: 1-5, 9, 11 или 1-5.9.11):</label><input type="text" id="i2-rows" inputmode="numeric"${this.measureMode !== 'hectares' ? ' oninput="app.onRowsInput()"' : ''}>${this.measureMode === 'hectares' ? '<div class="measure-hint">Гектары посчитаются автоматически из выбранных рядов и площади клетки.</div>' : '<div id="i2-rows-warn" class="rows-warn"></div>'}</div>`
           : '<div class="form-group"><label>Ряды (например: 1-5, 9, 11 или 1-5.9.11):</label><input type="text" id="i2-rows" inputmode="numeric"></div>'
         }
         <button id="i2-add-btn" onclick="app.addEntry()">Добавить</button>
@@ -1523,6 +1523,33 @@ class BrigadeAssistant {
   onI2CellChange() {
     this.ctxCell = document.getElementById('i2-cell').value;
     this.ctxCellMaxRow = this.cellMaxRow[this.estate + '|' + this.ctxQuarter + '|' + this.ctxCell] ?? null;
+  }
+
+  onRowsInput() {
+    const warn = document.getElementById('i2-rows-warn');
+    if (!warn) return;
+    const maxRow = this.ctxCellMaxRow;
+    if (!maxRow) { warn.textContent = ''; return; }
+
+    const val = (document.getElementById('i2-rows')?.value || '').trim();
+    if (!val) { warn.textContent = ''; return; }
+
+    const nums = [];
+    for (const part of val.split(/[,.;\s]+/).filter(Boolean)) {
+      const range = part.match(/^(\d+)-(\d+)$/);
+      if (range) {
+        for (let i = +range[1]; i <= +range[2]; i++) nums.push(i);
+      } else if (/^\d+$/.test(part)) {
+        nums.push(+part);
+      }
+    }
+
+    const phantoms = [...new Set(nums.filter(n => n > maxRow))].sort((a, b) => a - b);
+    if (phantoms.length) {
+      warn.textContent = `⚠️ Ряды ${phantoms.join(', ')} — нет в инвентаре клетки (всего ${maxRow}). Возможно, опечатка?`;
+    } else {
+      warn.textContent = '';
+    }
   }
 
   onI2WorkTypeChange(kind) {
