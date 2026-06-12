@@ -217,10 +217,12 @@ class BrigadeAssistant {
       localStorage.removeItem('selectedEstate');
     }
     this.cellsByQuarter = {};
+    this.cellMaxRow = {};       // clear cache when estate changes
     await this.loadQuarters();
     // Сбрасываем контекст и записи журнала — они привязаны к хозяйству.
     this.ctxQuarter = '';
     this.ctxCell = '';
+    this.ctxCellMaxRow = null;  // clear cache when estate changes
     this.selectedEmployeeId = null;
     await this.loadTodayEntries(this.inputDate);
     this.renderInput();
@@ -1513,6 +1515,7 @@ class BrigadeAssistant {
   async onI2QuarterChange() {
     this.ctxQuarter = document.getElementById('i2-quarter').value;
     this.ctxCell = '';
+    this.ctxCellMaxRow = null;
     this.ctxCells = [];
     await this.refreshI2Cells();
   }
@@ -1545,6 +1548,7 @@ class BrigadeAssistant {
     // не таскать невидимое состояние между режимами.
     if (mode === 'hectares') {
       this.ctxCell = '';
+      this.ctxCellMaxRow = null;
     } else {
       this.ctxCells = [];
     }
