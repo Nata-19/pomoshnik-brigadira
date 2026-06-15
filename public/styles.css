@@ -1159,6 +1159,8 @@ button:active {
     cursor: pointer;
 }
 
+.perf-toggle-filters { margin: 6px 0 4px; }
+.perf-filter-panel { margin-bottom: 6px; }
 .perf-filter-row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:6px 0; }
 .filter-label { color:#888; font-size:13px; margin-right:4px; }
 .filter-chip { padding:4px 10px; border:1px solid #ccc; border-radius:14px; background:#fff; font-size:13px; cursor:pointer; }

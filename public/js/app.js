@@ -2171,6 +2171,11 @@ class BrigadeAssistant {
     this.renderPerformance();
   }
 
+  togglePerfFiltersPanel() {
+    this.perfFiltersOpen = !this.perfFiltersOpen;
+    this.renderPerformance();
+  }
+
   // Рендер: чипы фильтров + строки, сгруппированные по культуре (estate),
   // каждая плашка помечена типом (ряды/механизировано).
   renderPerformance() {
@@ -2187,11 +2192,16 @@ class BrigadeAssistant {
     const allWt = [...new Set(this.perfRows.map(x => x.work_type))].sort((a, b) => a.localeCompare(b, 'ru'));
     const chip = (kind, val, on) =>
       `<button class="filter-chip ${on ? 'active' : ''}" onclick="app.togglePerfFilter('${kind}', '${this.escapeAttr(val)}')">${this.escapeHtml(val)}</button>`;
+    const filterActive = this.perfWorkTypes.size < allWt.length || this.perfQuarters.size < allQ.length;
+    const filtersOpen = !!this.perfFiltersOpen;
     filters.innerHTML =
+      `<button class="mini-btn perf-toggle-filters" onclick="app.togglePerfFiltersPanel()">🔍 Фильтры${filterActive ? ' •' : ''} ${filtersOpen ? '▲' : '▼'}</button>` +
+      `<div class="perf-filter-panel"${filtersOpen ? '' : ' style="display:none;"'}>` +
       `<div class="perf-filter-row"><span class="filter-label">Виды работ:</span>` +
       allWt.map(wt => chip('wt', wt, this.perfWorkTypes.has(wt))).join('') + `</div>` +
       `<div class="perf-filter-row"><span class="filter-label">Кварталы:</span>` +
-      allQ.map(q => chip('q', q, this.perfQuarters.has(q))).join('') + `</div>`;
+      allQ.map(q => chip('q', q, this.perfQuarters.has(q))).join('') + `</div>` +
+      `</div>`;
 
     const shown = this.perfRows.filter(x =>
       this.perfWorkTypes.has(x.work_type) && this.perfQuarters.has(String(x.quarter)));
