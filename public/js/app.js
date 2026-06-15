@@ -502,7 +502,7 @@ class BrigadeAssistant {
             ${!this.config.demoMode ? `<span>${this.escapeHtml(this.me ? this.me.login : '')}</span>` : ''}
             ${this.config.demoMode ? window.DemoUI.renderDemoResetButton() : ''}
             ${this.config.demoMode ? `<button class="mini-btn" onclick="app.renderCultureModal('add')">+ ещё культура</button>` : ''}
-            ${this.config.demoMode ? `<button class="mini-btn" onclick="app.startGuide()">❓ Как пользоваться</button>` : ''}
+            ${this.config.demoMode ? `<button id="help-guide-btn" class="mini-btn" onclick="app.startGuide()">❓ Как пользоваться</button>` : ''}
             ${!this.config.demoMode ? `<button class="logout-btn" onclick="app.logout()">Выйти</button>` : ''}
             <select id="estate-sel" class="estate-chip" required onchange="app.onEstateChange()">
               <option value="">${this.config.demoMode ? '🌳 Выбор культуры' : '📍 Выбор хозяйства'}</option>
@@ -516,12 +516,12 @@ class BrigadeAssistant {
         </div>
 
         <div class="tabs">
-          <button class="tab-button active" onclick="app.switchTab(event, 'input')">Ввод данных</button>
-          <button class="tab-button" onclick="app.switchTab(event, 'report')">Отчет за период</button>
-          <button class="tab-button" onclick="app.switchTab(event, 'logs'); app.loadLogs()">Журнал</button>
-          <button class="tab-button" onclick="app.switchTab(event, 'disputed'); app.loadDisputed()">Спорные</button>
-          <button class="tab-button" onclick="app.switchTab(event, 'reconcile'); app.onReconcileTabOpen()">Сверка</button>
-          <button class="tab-button" onclick="app.switchTab(event, 'perf'); app.loadPerformance()">Выполнение</button>
+          <button id="tab-input" class="tab-button active" onclick="app.switchTab(event, 'input')">Ввод данных</button>
+          <button id="tab-report" class="tab-button" onclick="app.switchTab(event, 'report')">Отчет за период</button>
+          <button id="tab-logs" class="tab-button" onclick="app.switchTab(event, 'logs'); app.loadLogs()">Журнал</button>
+          <button id="tab-disputed" class="tab-button" onclick="app.switchTab(event, 'disputed'); app.loadDisputed()">Спорные</button>
+          <button id="tab-reconcile" class="tab-button" onclick="app.switchTab(event, 'reconcile'); app.onReconcileTabOpen()">Сверка</button>
+          <button id="tab-perf" class="tab-button" onclick="app.switchTab(event, 'perf'); app.loadPerformance()">Выполнение</button>
           ${this.me && this.me.is_admin ? `<button class="tab-button" onclick="app.switchTab(event, 'admin'); app.loadBrigadiers()">Админ</button>` : ''}
         </div>
 
@@ -901,15 +901,22 @@ class BrigadeAssistant {
   // на странице. target — CSS-селектор; если null, облачко по центру экрана.
   _guideSteps() {
     return [
-      { target: null, text: 'Привет! Это демо «Помощник Бригадира». Покажу за минуту, как пользоваться.' },
+      { target: null, text: 'Привет! Это демо «Помощник Бригадира». Покажу за пару минут, как пользоваться.' },
       { target: '#estate-sel', text: 'В шапке выбери культуру: у каждой свои кварталы, клетки и записи.' },
       { target: '.chips-row', text: 'Выбери квартал, клетку, вид работ.' },
       { target: '.mode-row', text: 'Выбери режим «Как считать»: ряды+кусты, ряды, часы, гектары или километры. Активный подсветится синим.' },
       { target: '.roster-toggle', text: 'Открой список бригады и отметь галочками кто сегодня на работе.' },
       { target: '.chips', text: 'Нажми на фамилию рабочего — она подсветится синим, значит выбран.' },
-      { target: '#i2-rows', text: 'Введи ряды (например «1-5, 9»).' },
+      { target: '#i2-rows', text: 'Введи ряды (например «1-5, 9»). Если ряд за пределами клетки — увидишь предупреждение «фантомный ряд».' },
       { target: '#i2-add-btn', text: 'Жми «Добавить» — запись попадёт в плашку «Всего за день» внизу.' },
-      { target: '.tabs', text: 'Вкладки «Журнал» и «Отчёт за период» покажут что бригадир ввёл.' },
+      { target: '#tab-logs', text: 'Журнал: здесь видно номера рядов, которые делал каждый работник — на каком квартале, клетке и виде работ. Помогает найти, кто делал конкретный ряд.' },
+      { target: '#tab-report', text: 'Отчёт за период: отчёт по диапазону дат — для бухгалтерии, итоги.' },
+      { target: '#tab-reconcile', text: 'Сверка: что сделано и что осталось по конкретной клетке. Помогает найти неучтённые ряды.' },
+      { target: '#tab-disputed', text: 'Спорные: если двое работали на одном ряду — конфликт попадает сюда. Можно поделить долю или вернуть ряд одному.' },
+      { target: '#tab-perf', text: 'Выполнение: сколько гектаров сделано и осталось по культурам. Под кнопкой 🔍 Фильтры — выбор по видам работ и кварталам.' },
+      { target: null, text: 'Если ввёл что-то по ошибке — открой запись в Журнале и нажми «Удалить» или «Спорный».' },
+      { target: null, text: 'Деление куста: если двое работали на одном ряду — в окне деления указываешь кому сколько кустов.' },
+      { target: '#help-guide-btn', text: 'Готово! Если что-то забудешь — жми «❓ Как пользоваться» в шапке, и гайд откроется снова.' },
     ];
   }
 
