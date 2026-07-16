@@ -1,4 +1,4 @@
-const CACHE_NAME = 'brigade-v29';
+const CACHE_NAME = 'brigade-v30';
 // Общие модули офлайна — те же файлы, что и на странице.
 importScripts('/js/offline-queue-logic.js', '/js/offline-storage.js', '/js/offline-sync.js');
 const urlsToCache = [
@@ -45,24 +45,41 @@ self.addEventListener('fetch', event => {
 
   const url = new URL(event.request.url);
 
-  // API-запросы — всегда сеть, не кэшируем (данные меняются)
+  // GET /api/* — network-first с фолбэком в кэш, чтобы экран открывался офлайн.
   if (url.pathname.startsWith('/api/')) {
-    return; // браузер обработает сам, без вмешательства SW
+    event.respondWith(
+      fetch(event.request)
+        .then(response => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(event.request))
+    );
+    return;
   }
 
-  // Статические ресурсы — network-first, кэш как fallback на офлайн
+  // Статика — cache-first со свежением в фоне.
+  // Важно: для .js/.css НЕ отдаём index.html как fallback — иначе «OfflineQueueLogic is not defined».
   event.respondWith(
-    fetch(event.request)
-      .then(response => {
-        if (response && response.status === 200 && response.type === 'basic') {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
-        }
-        return response;
-      })
-      .catch(() => {
-        return caches.match(event.request).then(cached => cached || caches.match('/index.html'));
-      })
+    caches.match(event.request).then(cached => {
+      const network = fetch(event.request)
+        .then(response => {
+          if (response && response.status === 200 && response.type === 'basic') {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+          }
+          return response;
+        })
+        .catch(() => {
+          if (cached) return cached;
+          const isPage = url.pathname === '/' || url.pathname.endsWith('.html');
+          return isPage ? caches.match('/index.html') : Response.error();
+        });
+      return cached || network;
+    })
   );
 });
 
@@ -75,8 +92,10 @@ self.addEventListener('sync', event => {
 
 async function syncData() {
   try {
-    // TODO: синхронизировать данные с сервером
-    console.log('Data synced');
+    if (self.OfflineSync && self.OfflineSync.syncQueue) {
+      const res = await self.OfflineSync.syncQueue();
+      console.log('Sync done:', res);
+    }
   } catch (error) {
     console.error('Sync failed:', error);
   }

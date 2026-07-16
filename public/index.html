@@ -16,6 +16,9 @@
 <body>
     <div id="root"></div>
     <script src="/js/demo-ui.js"></script>
+    <script src="/js/offline-queue-logic.js"></script>
+    <script src="/js/offline-storage.js"></script>
+    <script src="/js/offline-sync.js"></script>
     <script src="/js/app.js"></script>
     <script>
 fetch('/api/config').then(r => r.json()).then(c => { document.title = c.brandName; });
