@@ -33,6 +33,11 @@ class BrigadeAssistant {
       navigator.serviceWorker.register('/service-worker.js').catch(e => console.log('SW error:', e));
     }
 
+    // Офлайн: реагируем на возврат сети и на изменения очереди.
+    self.addEventListener('online', () => { this.syncNow(); });
+    self.addEventListener('offline', () => { this.updateOfflineIndicator(); });
+    self.addEventListener('offline-queue-changed', () => { this.updateOfflineIndicator(); });
+
     if (this.config.demoMode) {
       // Демо: убедимся что сессия создана
       await fetch('/api/demo/session', { method: 'POST' });
@@ -43,6 +48,7 @@ class BrigadeAssistant {
         // На стартовой странице ввода культур гайд не запускаем — там и так
         // одно понятное поле ввода, облако только мешало бы.
         this.renderCultureModal();
+        this.scheduleInitialSync();
         return;
       }
       this.estate = estates[0].id;
@@ -54,6 +60,7 @@ class BrigadeAssistant {
       await this.loadTodayEntries(this.inputDate);
       this.render();
       this._maybeAutoStartGuide();
+      this.scheduleInitialSync();
       return;
     }
 
@@ -88,6 +95,14 @@ class BrigadeAssistant {
     await this.loadAttendance(this.inputDate);
     await this.loadTodayEntries(this.inputDate);
     this.render();
+    this.scheduleInitialSync();
+  }
+
+  // Досыл очереди — только после первого рендера (нужны куки сессии / готовый DOM).
+  scheduleInitialSync() {
+    this.updateOfflineIndicator();
+    if (!navigator.onLine) return;
+    queueMicrotask(() => { this.syncNow().catch(() => {}); });
   }
 
   // Обёртка над fetch: при 401 (вошёл — но больше не активен) — экран входа.
@@ -99,6 +114,124 @@ class BrigadeAssistant {
       throw new Error('Требуется вход');
     }
     return r;
+  }
+
+  // Пишущий запрос: пробуем отправить; нет сети → кладём в очередь.
+  // Возврат: { queued:true, client_uuid } | { queued:false, ok, status, data }.
+  async sendOrQueue({ kind, method, url, body }) {
+    const uuid = (self.crypto && crypto.randomUUID)
+      ? crypto.randomUUID() : String(Date.now()) + '-' + Math.random();
+    const sendBody = body ? { ...body } : null;
+    if (kind === 'log' && sendBody) sendBody.client_uuid = uuid; // дедуп на сервере
+    let outcome;
+    try {
+      const r = await fetch(url, {
+        method,
+        headers: sendBody ? { 'Content-Type': 'application/json' } : undefined,
+        body: sendBody ? JSON.stringify(sendBody) : undefined,
+        credentials: 'same-origin',
+      });
+      const data = await r.json().catch(() => ({}));
+      outcome = { networkError: false, ok: r.ok, status: r.status, data };
+    } catch (e) {
+      outcome = { networkError: true };
+    }
+    if (OfflineQueueLogic.classifyWriteOutcome(outcome) === 'queue') {
+      const item = OfflineQueueLogic.makeQueueItem({ kind, method, url, body: sendBody }, uuid, Date.now());
+      await OfflineStore.enqueue(item);
+      await this.updateOfflineIndicator();
+      return { queued: true, client_uuid: uuid };
+    }
+    return { queued: false, ok: outcome.ok, status: outcome.status, data: outcome.data };
+  }
+
+  // Карточка записи из тела офлайн-очереди — бригадир видит сразу, что ввёл.
+  logFromQueueBody(body, clientUuid) {
+    return {
+      id: 'pending:' + clientUuid,
+      client_uuid: clientUuid,
+      _pending: true,
+      date: body.date,
+      estate_id: body.estate || '',
+      quarter: body.quarter != null ? String(body.quarter) : '',
+      cell: body.cell != null ? String(body.cell) : '',
+      employee: body.employee || '',
+      work_type: body.work_type || '',
+      measure_mode: body.measure_mode || '',
+      rows: body.rows != null ? String(body.rows) : '',
+      row_weights: null,
+      bushes: null,
+      hours: body.hours != null && body.hours !== '' ? Number(body.hours) : null,
+      hectares: body.hectares != null ? Number(body.hectares) : null,
+      kilometers: body.kilometers != null ? Number(body.kilometers) : null,
+      created_at: new Date().toISOString(),
+    };
+  }
+
+  // Добавляет к серверным записям те, что ещё ждут отправки в IndexedDB.
+  async mergePendingLogs(serverLogs, date) {
+    let pending = [];
+    try {
+      if (!self.OfflineStore) return serverLogs || [];
+      const items = await OfflineStore.getAll();
+      pending = items
+        .filter(it => it.kind === 'log' && it.body && it.body.date === date)
+        .map(it => this.logFromQueueBody(it.body, it.id));
+    } catch (e) { /* IndexedDB недоступна */ }
+    const demoMode = !!(this.config && this.config.demoMode);
+    if (!demoMode && this.estate) {
+      pending = pending.filter(p => p.estate_id === this.estate);
+    }
+    const pendingUuids = new Set(pending.map(p => p.client_uuid));
+    const serverOnly = (serverLogs || []).filter(l => !l.client_uuid || !pendingUuids.has(l.client_uuid));
+    return [...pending, ...serverOnly].sort((a, b) => {
+      const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return tb - ta;
+    });
+  }
+
+  // Обновляет бейдж «📤 N» и баннер «нет сети» в шапке.
+  async updateOfflineIndicator() {
+    let n = 0;
+    try { n = await OfflineStore.count(); } catch (e) { n = 0; }
+    const badge = document.getElementById('offline-badge');
+    if (badge) {
+      badge.textContent = n > 0 ? `📤 ${n}` : '';
+      badge.style.display = n > 0 ? 'inline-block' : 'none';
+    }
+    const banner = document.getElementById('offline-banner');
+    if (banner) banner.style.display = navigator.onLine ? 'none' : 'block';
+  }
+
+  // Досылает очередь и обновляет индикатор. Безопасно дёргать многократно.
+  // Спорные ряды отложенного лога разрешаем теми же модалками, что и онлайн.
+  async syncNow() {
+    let result = null;
+    try {
+      if (self.OfflineSync) {
+        result = await OfflineSync.syncQueue({
+          onLogConflict: async (item, data) => {
+            const body = item.body || {};
+            const resolved = await this.resolveRowConflicts(
+              data.conflicts || { sameDay: [], otherDay: [] }, body.employee, body
+            );
+            await this.loadTodayEntries(this.inputDate);
+            return resolved; // false = отмена → элемент остаётся в очереди
+          },
+        });
+      }
+    } catch (e) { console.warn('[offline] sync skipped:', e); /* нет сети/занят/закрыл модалку — попробуем позже */ }
+    await this.updateOfflineIndicator();
+    // После досыла перечитываем день, чтобы доехавшие записи появились на
+    // «Ввод данных» (список «ЗАПИСИ ЗА …» с рядами/кустами), а не только в «Журнале».
+    if (result && result.sent > 0) {
+      try {
+        await this.loadAttendance(this.inputDate);
+        await this.loadTodayEntries(this.inputDate);
+        this.renderInput();
+      } catch (e) { console.warn('[offline] refresh after sync failed:', e); }
+    }
   }
 
   async loadConfig() {
@@ -194,17 +327,22 @@ class BrigadeAssistant {
     // потом на винограде, обе записи должны быть видны. Поэтому здесь без
     // фильтра по estate. В проде у бригадира пока одно хозяйство — фильтруем
     // как раньше для совместимости.
-    if (!this.config.demoMode && !this.estate) { this.entries = []; return; }
+    const demoMode = !!(this.config && this.config.demoMode);
+    if (!demoMode && !this.estate) {
+      this.entries = await this.mergePendingLogs([], date);
+      return;
+    }
     try {
       let url = '/api/logs?date=' + encodeURIComponent(date);
-      if (!this.config.demoMode && this.estate) {
+      if (!demoMode && this.estate) {
         url += '&estate=' + encodeURIComponent(this.estate);
       }
       const r = await this.apiFetch(url);
       const data = await r.json();
-      this.entries = (r.ok && data.logs) ? data.logs : [];
+      const logs = (r.ok && data.logs) ? data.logs : [];
+      this.entries = await this.mergePendingLogs(logs, date);
     } catch (e) {
-      this.entries = [];
+      this.entries = await this.mergePendingLogs([], date);
     }
   }
 
@@ -1438,16 +1576,17 @@ class BrigadeAssistant {
     return this.entries.map(log => {
       let measure;
       if (log.measure_mode === 'hours') {
-        measure = `${log.hours} часов`;
+        measure = `${log.hours != null ? log.hours : 0} часов`;
       } else if (log.measure_mode === 'hectares') {
         const rowsRange = log.rows ? `ряды ${this.escapeHtml(this.formatRange(log.rows))}, ` : '';
-        measure = `${rowsRange}${log.hectares != null ? log.hectares : 0} гектаров`;
+        const ha = log.hectares != null ? log.hectares : (log._pending ? '—' : 0);
+        measure = `${rowsRange}${ha} гектаров`;
       } else if (log.measure_mode === 'kilometers') {
         measure = `${log.kilometers != null ? log.kilometers : 0} км`;
       } else {
         const rowCount = this.rowWeightSum(log);
         measure = `${this.fmtRows(rowCount)} рядов`;
-        if (log.measure_mode === 'rows_bushes') measure += ` · ${log.bushes} кустов`;
+        if (log.measure_mode === 'rows_bushes' && log.bushes != null) measure += ` · ${log.bushes} кустов`;
       }
       const place = (!log.quarter)
         ? '' : ` · Кв.${this.escapeHtml(log.quarter)}${log.cell ? ' кл.' + this.escapeHtml(this.formatRange(log.cell)) : ''}`;
@@ -1456,14 +1595,20 @@ class BrigadeAssistant {
       // совпадать между культурами. Эмодзи по культуре — см. cultureEmoji.
       const culture = (this.config.demoMode && log.estate_id)
         ? ` · ${this.cultureEmoji(log.estate_id)} ${this.escapeHtml(log.estate_id)}` : '';
+      const pendingBadge = log._pending
+        ? '<span class="entry-pending-badge">📤 не отправлено</span> ' : '';
+      const cardClass = log._pending ? 'entry-card entry-pending' : 'entry-card';
+      const deleteBtn = log._pending
+        ? `<button class="delete-btn" onclick="app.cancelPendingEntry('${log.client_uuid}')">Убрать</button>`
+        : `<button class="delete-btn" onclick="app.deleteEntry(${log.id})">Удалить</button>`;
       return `
-        <div class="entry-card">
+        <div class="${cardClass}">
           <div class="log-info">
-            <div class="log-employee">${this.escapeHtml(log.employee)}</div>
+            <div class="log-employee">${pendingBadge}${this.escapeHtml(log.employee)}</div>
             <div class="log-meta">${this.escapeHtml(log.work_type || '')}${culture}${place}</div>
             <div class="log-meta">${measure}</div>
           </div>
-          <button class="delete-btn" onclick="app.deleteEntry(${log.id})">Удалить</button>
+          ${deleteBtn}
         </div>
       `;
     }).join('');
@@ -1743,13 +1888,18 @@ class BrigadeAssistant {
     this.adding = true;
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Добавляю...'; }
     try {
-      const r = await this.apiFetch('/api/logs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) { setMsg('❌ ' + (data.error || 'Ошибка')); return; }
+      const res = await this.sendOrQueue({ kind: 'log', method: 'POST', url: '/api/logs', body });
+      if (res.queued) {
+        const pending = this.logFromQueueBody(body, res.client_uuid);
+        this.entries = [pending, ...this.entries.filter(e => e.client_uuid !== res.client_uuid)];
+        setMsg('📤 Записано офлайн — отправлю, когда будет сеть');
+        this.selectedEmployeeId = null;
+        if (this.measureMode === 'hectares') this.ctxCells = [];
+        this.renderInput();
+        return;
+      }
+      const data = res.data || {};
+      if (!res.ok) { setMsg('❌ ' + (data.error || 'Ошибка')); return; }
 
       const conflicts = data.conflicts || { sameDay: [], otherDay: [] };
       if (conflicts.sameDay.length || conflicts.otherDay.length) {
@@ -1922,6 +2072,18 @@ class BrigadeAssistant {
       ok.addEventListener('click', close);
       overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
     });
+  }
+
+  async cancelPendingEntry(clientUuid) {
+    if (!confirm('Убрать запись из очереди? Она ещё не отправлена на сервер.')) return;
+    try {
+      await OfflineStore.remove(clientUuid);
+      await this.loadTodayEntries(this.inputDate);
+      await this.updateOfflineIndicator();
+      this.renderInput();
+    } catch (e) {
+      alert('Ошибка: ' + e.message);
+    }
   }
 
   async deleteEntry(id) {

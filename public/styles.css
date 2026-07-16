@@ -1167,3 +1167,30 @@ button:active {
 .filter-chip.active { background:#2e7d32; color:#fff; border-color:#2e7d32; }
 .perf-culture-title { font-weight:600; margin:12px 0 4px; }
 .perf-kind { color:#888; font-size:12px; }
+.offline-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  background: #f0ad4e;
+  color: #fff;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.offline-banner {
+  background: #fff3cd;
+  color: #7a5b00;
+  border: 1px solid #ffe69c;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 8px 0;
+  font-size: 14px;
+}
+.entry-card.entry-pending {
+  border-left: 3px solid #f0ad4e;
+}
+.entry-pending-badge {
+  font-size: 12px;
+  font-weight: 600;
+  color: #b8860b;
+}
