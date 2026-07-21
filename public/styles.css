@@ -391,6 +391,14 @@ button:active {
     color: #2c3e50;
 }
 
+.report-group-totals {
+    margin-top: 4px;
+    padding: 2px 0 2px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #4a6741;
+}
+
 .report-grand-totals {
     margin-top: 14px;
     padding: 10px 12px;
@@ -399,6 +407,17 @@ button:active {
     font-weight: 600;
     color: #2c3e50;
     font-size: 15px;
+}
+
+.report-grand-label {
+    margin-bottom: 6px;
+}
+
+.report-grand-line {
+    font-weight: 500;
+    font-size: 14px;
+    padding: 2px 0;
+    line-height: 1.35;
 }
 
 /* Демо: обучающее облако «Как пользоваться» в форме настоящего облака.
@@ -992,30 +1011,38 @@ button:active {
   margin-bottom: 4px;
 }
 
-/* Компактный вид только в Отчёте за период — журнал и плашка «Всего за день» остаются прежними. */
+/* Компактный вид в Отчёте за период и в «Всего за день». */
 /* Контейнер .result задаёт pre-wrap + monospace для старого текстового отчёта — гасим, иначе HTML рендерится с дикими отступами. */
-#report-result {
+#report-result,
+#i2-totals {
   padding: 10px;
   white-space: normal;
   font-family: inherit;
   font-size: 14px;
   line-height: 1.4;
 }
-#report-result .log-group {
+#i2-totals {
+  padding: 0;
+}
+#report-result .log-group,
+#i2-totals .log-group {
   margin: 4px 0;
   padding: 4px 8px;
   border-radius: 6px;
 }
-#report-result .log-group-head {
+#report-result .log-group-head,
+#i2-totals .log-group-head {
   margin-bottom: 2px;
   font-size: 0.92rem;
   line-height: 1.25;
 }
-#report-result .log-worker-row {
+#report-result .log-worker-row,
+#i2-totals .log-worker-row {
   padding: 1px 0;
   line-height: 1.3;
 }
-#report-result .log-worker-name {
+#report-result .log-worker-name,
+#i2-totals .log-worker-name {
   font-size: 0.9rem;
 }
 
@@ -1167,6 +1194,42 @@ button:active {
 .filter-chip.active { background:#2e7d32; color:#fff; border-color:#2e7d32; }
 .perf-culture-title { font-weight:600; margin:12px 0 4px; }
 .perf-kind { color:#888; font-size:12px; }
+.perf-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.perf-date-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: #333;
+}
+.perf-agro-card {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid #d9e7c8;
+  border-radius: 12px;
+  background: #f7fbf3;
+}
+.perf-agro-text {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.45;
+  color: #2c3e50;
+}
+.perf-agro-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  gap: 8px;
+}
 .offline-badge {
   display: inline-block;
   margin-left: 8px;

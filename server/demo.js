@@ -106,7 +106,7 @@ function requireDemoSession(pool) {
 }
 
 // Заводское наполнение Этапа Б: создаёт хозяйство (= культуру в demo_sessions),
-// 2 квартала по 5 клеток с инвентарём, 2-3 примера записей в журнале.
+// 2 квартала по 5 клеток с инвентарём. Журнал пустой (см. ниже).
 //
 // unit: 'bush' | 'tree' | 'other' (для термина "растений")
 async function seedEstate(pool, sessionId, culture, unit) {
@@ -142,42 +142,10 @@ async function seedEstate(pool, sessionId, culture, unit) {
     }
   }
 
-  // Явка Иванова, Петрова, Сидорова на вчера и позавчера
-  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const dayBefore = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const empRows = await pool.query(
-    'SELECT id, name FROM employees WHERE demo_session_id=$1 ORDER BY id',
-    [sessionId]
-  );
-  for (const date of [yesterday, dayBefore]) {
-    for (const emp of empRows.rows) {
-      await pool.query(
-        'INSERT INTO attendance (brigadier_id, date, employee_id, demo_session_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING',
-        [0, date, emp.id, sessionId]
-      );
-    }
-  }
-
-  // 3 примера записей в журнале. estate_id = название культуры — так задано
-  // в новой модели (каждая культура = отдельный estate).
-  // Вчера: Иванов — Обрезка — Кв.1 клет.1 ряды 1-5
-  // Вчера: Петров — Обрезка — Кв.1 клет.2 ряды 1-4
-  // Позавчера: Сидоров — Опрыскивание — Кв.2 5 гектаров
-  await pool.query(
-    `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, brigadier_id, demo_session_id)
-     VALUES ($1, $3, '1', '1', 'Иванов', '1,2,3,4,5', 685, 'Обрезка', 'rows_bushes', 0, $2)`,
-    [yesterday, sessionId, culture]
-  );
-  await pool.query(
-    `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, brigadier_id, demo_session_id)
-     VALUES ($1, $3, '1', '2', 'Петров', '1,2,3,4', 555, 'Обрезка', 'rows_bushes', 0, $2)`,
-    [yesterday, sessionId, culture]
-  );
-  await pool.query(
-    `INSERT INTO work_logs (date, estate_id, quarter, cell, employee, rows, bushes, work_type, measure_mode, hectares, brigadier_id, demo_session_id)
-     VALUES ($1, $3, '2', '', 'Сидоров', '', 0, 'Опрыскивание', 'hectares', 5, 0, $2)`,
-    [dayBefore, sessionId, culture]
-  );
+  // Журнал и явку намеренно НЕ засеиваем.
+  // Раньше сюда клали примеры (Иванов ряды 1–5 и т.п.) — после «Начать сначала»
+  // контроль рядов блокировал те же ряды («уже отмечал Иванов»). Чистый старт
+  // нужен и для тестов, и для показа: посетитель сам делает первые записи.
 }
 
 // Добавляет ещё одну культуру в уже созданное демо-хозяйство: 2 квартала

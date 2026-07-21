@@ -2005,10 +2005,21 @@ app.get('/api/report/hectares', authOrDemo, async (req, res) => {
       parserToUse = parser;
     }
 
+    // Дата для «Сегодня» — с клиента YYYY-MM-DD; иначе сегодня (локальная дата сервера).
+    let todayDate = String(req.query.date || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(todayDate)) {
+      const now = new Date();
+      todayDate = [
+        now.getFullYear(),
+        String(now.getMonth() + 1).padStart(2, '0'),
+        String(now.getDate()).padStart(2, '0'),
+      ].join('-');
+    }
+
     let result;
     if (DEMO_MODE) {
       result = await pool.query(
-        `SELECT estate_id, quarter, cell, work_type, rows, measure_mode, hectares
+        `SELECT date, estate_id, quarter, cell, work_type, rows, measure_mode, hectares
          FROM work_logs
          WHERE demo_session_id = $1
            AND ( (measure_mode IN ('rows_bushes','rows_only') AND rows IS NOT NULL AND rows <> '')
@@ -2017,7 +2028,7 @@ app.get('/api/report/hectares', authOrDemo, async (req, res) => {
       );
     } else {
       result = await pool.query(
-        `SELECT estate_id, quarter, cell, work_type, rows, measure_mode, hectares
+        `SELECT date, estate_id, quarter, cell, work_type, rows, measure_mode, hectares
          FROM work_logs
          WHERE brigadier_id = $1
            AND ( (measure_mode IN ('rows_bushes','rows_only') AND rows IS NOT NULL AND rows <> '')
@@ -2047,8 +2058,8 @@ app.get('/api/report/hectares', authOrDemo, async (req, res) => {
       return sum;
     };
 
-    const rows = buildHectaresReport(result.rows, cellHa, quarterTotalHa);
-    res.json({ rows });
+    const rows = buildHectaresReport(result.rows, cellHa, quarterTotalHa, { todayDate });
+    res.json({ rows, date: todayDate });
   } catch (error) {
     console.error('Hectares report error:', error);
     res.status(500).json({ error: error.message });

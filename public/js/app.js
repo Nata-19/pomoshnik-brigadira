@@ -24,6 +24,8 @@ class BrigadeAssistant {
     this.perfRows = [];
     this.perfQuarters = new Set();
     this.perfWorkTypes = new Set();
+    this.perfDate = this.getTodayDate();
+    this.perfFiltersOpen = false;
     this.init();
   }
 
@@ -717,9 +719,16 @@ class BrigadeAssistant {
         </div>
 
         <div class="tab-content" id="perf-tab">
-          <button onclick="app.loadPerformance()">Обновить</button>
+          <div class="perf-toolbar">
+            <label class="perf-date-label">Отчёт за
+              <input type="date" id="perf-date" class="date-chip" value="${this.perfDate || this.inputDate}" onchange="app.onPerfDateChange()">
+            </label>
+            <button onclick="app.loadPerformance()">Обновить</button>
+            <button id="perf-copy-all" class="mini-btn" onclick="app.copyAllPerfReports()" style="display:none;">Скопировать всё</button>
+          </div>
           <div id="perf-filters"></div>
           <div id="perf-list" class="logs-list"></div>
+          <div id="perf-copy-msg" class="auth-msg"></div>
         </div>
 
         ${this.me && this.me.is_admin ? `
@@ -1223,18 +1232,22 @@ class BrigadeAssistant {
     return wt && wt.kind === 'mechanized' ? 'mechanized' : 'manual';
   }
 
-  // Возвращает эмодзи для значка культуры в пометках. По запросу Натали:
-  // деревья (яблоня, груша, слива…) — 🌳, виноград — 🍇 (кисточка),
-  // остальные кусты-ягоды (клубника, малина, смородина и пр.) — 🍓.
+  // Эмодзи культуры по названию (конкретные, не группами). Спека 2026-07-20.
   cultureEmoji(name) {
     const lc = (name || '').toLowerCase().trim();
-    if (!lc) return '🌳';
+    if (!lc) return '🌱';
     if (lc.includes('виноград')) return '🍇';
-    const TREES = ['яблон', 'груш', 'слив', 'персик', 'абрикос', 'вишн', 'черешн', 'алыч', 'орех'];
-    if (TREES.some(t => lc.includes(t))) return '🌳';
-    const BERRIES = ['малин', 'смородин', 'ежевик', 'крыжовник', 'клубник', 'голубик', 'жимолост'];
-    if (BERRIES.some(b => lc.includes(b))) return '🍓';
-    return '🌳';
+    if (lc.includes('яблон')) return '🍎';
+    if (lc.includes('груш')) return '🍐';
+    if (lc.includes('малин')) return '🫐';
+    if (lc.includes('клубник')) return '🍓';
+    if (lc.includes('черешн') || lc.includes('вишн')) return '🍒';
+    if (lc.includes('персик') || lc.includes('абрикос')) return '🍑';
+    if (lc.includes('слив') || lc.includes('алыч')) return '🟣';
+    if (lc.includes('орех')) return '🥜';
+    if (lc.includes('смородин') || lc.includes('ежевик') || lc.includes('голубик') || lc.includes('жимолост')) return '🫐';
+    if (lc.includes('крыжовник')) return '🟢';
+    return '🌱';
   }
 
   // Сумма «весов рядов» записи (дробный учёт): поделённый ряд = доля.
@@ -1337,10 +1350,8 @@ class BrigadeAssistant {
         } else {
           measure = `${this.fmtRows(a.rowCount)} рядов`;
         }
-        // В демо estate_id = название культуры. Показываем её в строке
-        // чтобы различать Кв.1 яблоня и Кв.1 виноград (одинаковые номера —
-        // разные культуры). Эмодзи зависит от названия — см. cultureEmoji.
-        const culture = (this.config.demoMode && a.estate_id)
+        // estate_id в демо = культура; в проде — хозяйство. Эмодзи — cultureEmoji.
+        const culture = a.estate_id
           ? `${this.cultureEmoji(a.estate_id)} ${this.escapeHtml(a.estate_id)}` : '';
         const parts = [this.escapeHtml(a.work_type || '—'), culture, place].filter(Boolean);
         const wtPlace = parts.join(' · ');
@@ -1351,18 +1362,24 @@ class BrigadeAssistant {
     return blocks.join('');
   }
 
-  // Демо Этап 6: Отчёт за период двумя блоками — 🛠 Ручные и 🚜 Мехраб.
-  // Главная точка входа: getReport вызывает её при demoMode.
-  renderTwoBlocksReportHtml(logs) {
+  // Единые плашки 🛠/🚜 для «Всего за день» и «Отчёт за период» (спека 2026-07-20).
+  renderPlatesReportHtml(logs, opts = {}) {
+    const grandLabel = opts.grandLabel || 'Всего за период';
+    const emptyText = opts.emptyText || 'За этот период записей нет.';
     const manualLogs = (logs || []).filter(l => this.kindOfWorkType(l.work_type) !== 'mechanized');
     const mechLogs = (logs || []).filter(l => this.kindOfWorkType(l.work_type) === 'mechanized');
     const manualBlock = manualLogs.length > 0 ? this.renderManualBlockHtml(manualLogs) : '';
     const mechBlock = mechLogs.length > 0 ? this.renderMechBlockHtml(mechLogs) : '';
     if (!manualBlock && !mechBlock) {
-      return '<p class="chips-empty">За этот период записей нет.</p>';
+      return `<p class="chips-empty">${this.escapeHtml(emptyText)}</p>`;
     }
-    const grand = this.renderGrandTotalsHtml(manualLogs, mechLogs);
+    const grand = this.renderGrandTotalsHtml(manualLogs, mechLogs, grandLabel);
     return manualBlock + mechBlock + grand;
+  }
+
+  // Алиас для старых вызовов.
+  renderTwoBlocksReportHtml(logs) {
+    return this.renderPlatesReportHtml(logs, { grandLabel: 'Всего за период' });
   }
 
   // Группировка для ручного блока: внешний ключ — вид работ + культура,
@@ -1420,7 +1437,7 @@ class BrigadeAssistant {
     const groups = this.groupManualLogs(logs);
     const groupBlocks = groups.map(g => {
       const emoji = this.cultureEmoji(g.estate);
-      const cultureLabel = this.config.demoMode && g.estate
+      const cultureLabel = g.estate
         ? ` · ${emoji} ${this.escapeHtml(g.estate)}`
         : '';
       const head = `<div class="report-group-head">${this.escapeHtml(g.work_type || '—')}${cultureLabel}</div>`;
@@ -1438,58 +1455,169 @@ class BrigadeAssistant {
         }
         return `<div class="report-line">${this.escapeHtml(r.employee)} — ${measure}${place}</div>`;
       }).join('');
-      return `<div class="report-group">${head}${lines}</div>`;
+      // Итого только внутри пары «вид работ + культура» — культуры не смешиваем.
+      const gTot = g.rowsList.reduce((t, r) => {
+        t.rowCount += Number(r.rowCount) || 0;
+        t.bushes += Number(r.bushes) || 0;
+        if (r.measure_mode === 'hours') t.hours += Number(r.hours) || 0;
+        return t;
+      }, { rowCount: 0, bushes: 0, hours: 0 });
+      const gParts = [];
+      if (gTot.rowCount > 0) gParts.push(`${this.fmtRows(gTot.rowCount)} рядов`);
+      if (gTot.bushes > 0) gParts.push(`${gTot.bushes} кустов`);
+      if (gTot.hours > 0) gParts.push(`${gTot.hours} часов`);
+      const gTotal = gParts.length
+        ? `<div class="report-group-totals">Итого: ${gParts.join(', ')}</div>`
+        : '';
+      return `<div class="report-group">${head}${lines}${gTotal}</div>`;
     }).join('');
-    const totals = this._manualTotals(logs);
-    const parts = [];
-    if (totals.rowCount > 0) parts.push(`${this.fmtRows(totals.rowCount)} рядов`);
-    if (totals.bushes > 0) parts.push(`${totals.bushes} кустов`);
-    if (totals.hours > 0) parts.push(`${totals.hours} часов`);
-    const totalLine = parts.length > 0
-      ? `<div class="report-block-totals">Итого руками: ${parts.join(', ')}</div>`
-      : '';
     return `<div class="report-block">
       <div class="report-block-head">🛠 Ручные работы</div>
       ${groupBlocks}
-      ${totalLine}
     </div>`;
+  }
+
+  // Мехраб: та же ось, что у ручных — внешний ключ вид работ + культура,
+  // внутри трактористы. Культуры не складываем вместе.
+  groupMechLogs(logs) {
+    const groups = new Map();
+    for (const log of logs) {
+      const wt = log.work_type || '';
+      const est = log.estate_id || '';
+      const gKey = `${wt}||${est}`;
+      if (!groups.has(gKey)) {
+        groups.set(gKey, { work_type: wt, estate: est, rows: new Map() });
+      }
+      const innerMap = groups.get(gKey).rows;
+      const inKey = [log.employee || '—', log.quarter || '', log.cell || '', log.measure_mode || ''].join('|');
+      if (!innerMap.has(inKey)) {
+        innerMap.set(inKey, {
+          employee: log.employee || '—',
+          quarter: log.quarter || '',
+          cell: log.cell || '',
+          measure_mode: log.measure_mode || '',
+          hectares: 0,
+          kilometers: 0,
+          hours: 0,
+          rows: log.rows || '',
+        });
+      }
+      const it = innerMap.get(inKey);
+      it.hectares += Number(log.hectares) || 0;
+      it.kilometers += Number(log.kilometers) || 0;
+      if (log.measure_mode === 'hours') it.hours += Number(log.hours) || 0;
+    }
+    const arr = Array.from(groups.values()).map(g => ({
+      work_type: g.work_type,
+      estate: g.estate,
+      rowsList: Array.from(g.rows.values()).map(r => ({
+        ...r,
+        hectares: Math.round(r.hectares * 100) / 100,
+        kilometers: Math.round(r.kilometers * 100) / 100,
+      })).sort((a, b) => {
+        const byEmp = (a.employee || '').localeCompare(b.employee || '', 'ru');
+        if (byEmp !== 0) return byEmp;
+        const aq = Number(a.quarter) || 0;
+        const bq = Number(b.quarter) || 0;
+        if (aq !== bq) return aq - bq;
+        return (Number(a.cell) || 0) - (Number(b.cell) || 0);
+      }),
+    }));
+    arr.sort((a, b) => {
+      const byWt = (a.work_type || '').localeCompare(b.work_type || '', 'ru');
+      if (byWt !== 0) return byWt;
+      return (a.estate || '').localeCompare(b.estate || '', 'ru');
+    });
+    return arr;
   }
 
   renderMechBlockHtml(logs) {
-    // Мехраб группируется по работнику — переиспользуем существующий рендер.
-    const byEmp = this.groupLogsByEmployee(logs);
-    const inner = this.renderEmployeeReportHtml(byEmp);
-    const totals = this._mechTotals(logs);
-    const parts = [];
-    if (totals.hectares > 0) parts.push(`${totals.hectares} га`);
-    if (totals.kilometers > 0) parts.push(`${totals.kilometers} км`);
-    if (totals.hours > 0) parts.push(`${totals.hours} часов`);
-    const totalLine = parts.length > 0
-      ? `<div class="report-block-totals">Итого техникой: ${parts.join(', ')}</div>`
-      : '';
+    const groups = this.groupMechLogs(logs);
+    const groupBlocks = groups.map(g => {
+      const emoji = this.cultureEmoji(g.estate);
+      const cultureLabel = g.estate
+        ? ` · ${emoji} ${this.escapeHtml(g.estate)}`
+        : '';
+      const head = `<div class="report-group-head">${this.escapeHtml(g.work_type || '—')}${cultureLabel}</div>`;
+      const lines = g.rowsList.map(r => {
+        const place = (r.quarter || r.cell)
+          ? ` · Кв.${this.escapeHtml(r.quarter)}${r.cell ? ', клет.' + this.escapeHtml(this.formatRange(r.cell)) : ''}`
+          : '';
+        let measure;
+        if (r.measure_mode === 'hours') {
+          measure = `${r.hours} часов`;
+        } else if (r.measure_mode === 'kilometers') {
+          measure = `${r.kilometers} км`;
+        } else {
+          const rowsRange = r.rows ? `ряды ${this.escapeHtml(this.formatRange(r.rows))}, ` : '';
+          measure = `${rowsRange}${r.hectares} га`;
+        }
+        return `<div class="report-line">${this.escapeHtml(r.employee)} — ${measure}${place}</div>`;
+      }).join('');
+      const gTot = g.rowsList.reduce((t, r) => {
+        t.hectares += Number(r.hectares) || 0;
+        t.kilometers += Number(r.kilometers) || 0;
+        t.hours += Number(r.hours) || 0;
+        return t;
+      }, { hectares: 0, kilometers: 0, hours: 0 });
+      gTot.hectares = Math.round(gTot.hectares * 100) / 100;
+      gTot.kilometers = Math.round(gTot.kilometers * 100) / 100;
+      const gParts = [];
+      if (gTot.hectares > 0) gParts.push(`${gTot.hectares} га`);
+      if (gTot.kilometers > 0) gParts.push(`${gTot.kilometers} км`);
+      if (gTot.hours > 0) gParts.push(`${gTot.hours} часов`);
+      const gTotal = gParts.length
+        ? `<div class="report-group-totals">Итого: ${gParts.join(', ')}</div>`
+        : '';
+      return `<div class="report-group">${head}${lines}${gTotal}</div>`;
+    }).join('');
     return `<div class="report-block">
       <div class="report-block-head">🚜 Механизированные работы</div>
-      ${inner}
-      ${totalLine}
+      ${groupBlocks}
     </div>`;
   }
 
-  renderGrandTotalsHtml(manualLogs, mechLogs) {
-    const m = this._manualTotals(manualLogs);
-    const e = this._mechTotals(mechLogs);
-    const manualParts = [];
-    if (m.rowCount > 0) manualParts.push(`${this.fmtRows(m.rowCount)} рядов`);
-    if (m.bushes > 0) manualParts.push(`${m.bushes} кустов`);
-    if (m.hours > 0) manualParts.push(`${m.hours} часов`);
-    const mechParts = [];
-    if (e.hectares > 0) mechParts.push(`${e.hectares} га`);
-    if (e.kilometers > 0) mechParts.push(`${e.kilometers} км`);
-    if (e.hours > 0) mechParts.push(`${e.hours} часов`);
-    const bits = [];
-    if (manualParts.length > 0) bits.push(`руками — ${manualParts.join(', ')}`);
-    if (mechParts.length > 0) bits.push(`техникой — ${mechParts.join(', ')}`);
-    if (bits.length === 0) return '';
-    return `<div class="report-grand-totals">Всего за период: ${bits.join('; ')}.</div>`;
+  // Итог внизу — отдельная строка на каждую пару «вид работ + культура», без схлопывания культур.
+  renderGrandTotalsHtml(manualLogs, mechLogs, grandLabel = 'Всего за период') {
+    const lines = [];
+    for (const g of this.groupManualLogs(manualLogs)) {
+      const t = g.rowsList.reduce((acc, r) => {
+        acc.rowCount += Number(r.rowCount) || 0;
+        acc.bushes += Number(r.bushes) || 0;
+        if (r.measure_mode === 'hours') acc.hours += Number(r.hours) || 0;
+        return acc;
+      }, { rowCount: 0, bushes: 0, hours: 0 });
+      const parts = [];
+      if (t.rowCount > 0) parts.push(`${this.fmtRows(t.rowCount)} рядов`);
+      if (t.bushes > 0) parts.push(`${t.bushes} кустов`);
+      if (t.hours > 0) parts.push(`${t.hours} часов`);
+      if (parts.length === 0) continue;
+      const emoji = this.cultureEmoji(g.estate);
+      const culture = g.estate ? ` · ${emoji} ${this.escapeHtml(g.estate)}` : '';
+      lines.push(`🛠 ${this.escapeHtml(g.work_type || '—')}${culture} — ${parts.join(', ')}`);
+    }
+    for (const g of this.groupMechLogs(mechLogs)) {
+      const t = g.rowsList.reduce((acc, r) => {
+        acc.hectares += Number(r.hectares) || 0;
+        acc.kilometers += Number(r.kilometers) || 0;
+        acc.hours += Number(r.hours) || 0;
+        return acc;
+      }, { hectares: 0, kilometers: 0, hours: 0 });
+      t.hectares = Math.round(t.hectares * 100) / 100;
+      t.kilometers = Math.round(t.kilometers * 100) / 100;
+      const parts = [];
+      if (t.hectares > 0) parts.push(`${t.hectares} га`);
+      if (t.kilometers > 0) parts.push(`${t.kilometers} км`);
+      if (t.hours > 0) parts.push(`${t.hours} часов`);
+      if (parts.length === 0) continue;
+      const emoji = this.cultureEmoji(g.estate);
+      const culture = g.estate ? ` · ${emoji} ${this.escapeHtml(g.estate)}` : '';
+      lines.push(`🚜 ${this.escapeHtml(g.work_type || '—')}${culture} — ${parts.join(', ')}`);
+    }
+    if (lines.length === 0) return '';
+    return `<div class="report-grand-totals"><div class="report-grand-label">${this.escapeHtml(grandLabel)}</div>${
+      lines.map(l => `<div class="report-grand-line">${l}</div>`).join('')
+    }</div>`;
   }
 
   _manualTotals(logs) {
@@ -1514,58 +1642,12 @@ class BrigadeAssistant {
     return t;
   }
 
-  // Плашка «Всего за день» на Вводе данных — сводка по КВАРТАЛУ+КЛЕТКЕ
-  // (а не по людям): сколько за день сделано в каждой клетке. Ряды дробные
-  // (поделённый ряд = доля), плюс кусты/часы/га/км по режимам.
+  // Плашка «Всего за день» — те же плашки 🛠/🚜, что и в отчёте за период.
   renderDailyTotalsHtml() {
-    if (!this.entries || this.entries.length === 0) {
-      return '<p class="chips-empty">Пока пусто.</p>';
-    }
-    const byCell = new Map();
-    for (const log of this.entries) {
-      const key = [log.estate_id || '', log.quarter || '', log.cell || ''].join('||');
-      if (!byCell.has(key)) {
-        byCell.set(key, {
-          estate_id: log.estate_id || '', quarter: log.quarter || '', cell: log.cell || '',
-          rowCount: 0, bushes: 0, hours: 0, hectares: 0, kilometers: 0,
-          hasRows: false, hasBushes: false,
-        });
-      }
-      const c = byCell.get(key);
-      if (log.measure_mode === 'hours') {
-        c.hours += Number(log.hours) || 0;
-      } else if (log.measure_mode === 'hectares') {
-        c.hectares += Number(log.hectares) || 0;
-        c.rowCount += this.rowWeightSum(log); c.hasRows = true;
-      } else if (log.measure_mode === 'kilometers') {
-        c.kilometers += Number(log.kilometers) || 0;
-      } else {
-        c.rowCount += this.rowWeightSum(log); c.hasRows = true;
-        if (log.measure_mode === 'rows_bushes') { c.bushes += Number(log.bushes) || 0; c.hasBushes = true; }
-      }
-    }
-    const cells = Array.from(byCell.values()).sort((a, b) => {
-      const be = (a.estate_id || '').localeCompare(b.estate_id || '', 'ru');
-      if (be !== 0) return be;
-      const aq = Number(a.quarter) || 0, bq = Number(b.quarter) || 0;
-      if (aq !== bq) return aq - bq;
-      return (Number(a.cell) || 0) - (Number(b.cell) || 0);
+    return this.renderPlatesReportHtml(this.entries, {
+      grandLabel: 'Всего за день',
+      emptyText: 'Пока пусто.',
     });
-    const lines = cells.map(c => {
-      const place = (c.quarter || c.cell)
-        ? `Кв.${this.escapeHtml(c.quarter)}${c.cell ? ', клет.' + this.escapeHtml(this.formatRange(c.cell)) : ''}`
-        : 'без клетки';
-      const culture = (this.config.demoMode && c.estate_id)
-        ? `${this.cultureEmoji(c.estate_id)} ${this.escapeHtml(c.estate_id)} · ` : '';
-      const parts = [];
-      if (c.hasRows) parts.push(`${this.fmtRows(c.rowCount)} рядов`);
-      if (c.hasBushes) parts.push(`${c.bushes} кустов`);
-      if (c.hours > 0) parts.push(`${c.hours} часов`);
-      if (c.hectares > 0) parts.push(`${Math.round(c.hectares * 100) / 100} га`);
-      if (c.kilometers > 0) parts.push(`${Math.round(c.kilometers * 100) / 100} км`);
-      return `<div class="report-emp-act">${culture}${place} — ${parts.join(', ')}</div>`;
-    }).join('');
-    return `<div class="report-emp-block">${lines}</div>`;
   }
 
   // HTML карточек записей за выбранную дату.
@@ -2309,14 +2391,17 @@ class BrigadeAssistant {
     res.innerHTML = summary + listHtml;
   }
 
-  // Загружает отчёт «Выполнение» (га сделано/осталось) и рисует с фильтрами.
+  // Загружает отчёт «Выполнение» (га сделано/сегодня/осталось) и рисует плашки агронома.
   async loadPerformance() {
     const list = document.getElementById('perf-list');
     const filters = document.getElementById('perf-filters');
     if (!list) return;
+    const dateEl = document.getElementById('perf-date');
+    if (dateEl && dateEl.value) this.perfDate = dateEl.value;
+    if (!this.perfDate) this.perfDate = this.getTodayDate();
     list.innerHTML = '<p style="padding:10px;">⏳ Загрузка...</p>';
     try {
-      const r = await this.apiFetch('/api/report/hectares');
+      const r = await this.apiFetch('/api/report/hectares?date=' + encodeURIComponent(this.perfDate));
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
         if (filters) filters.innerHTML = '';
@@ -2324,12 +2409,101 @@ class BrigadeAssistant {
         return;
       }
       this.perfRows = data.rows || [];
+      if (data.date) this.perfDate = data.date;
       this.perfQuarters = new Set(this.perfRows.map(x => String(x.quarter)));
       this.perfWorkTypes = new Set(this.perfRows.map(x => x.work_type));
       this.renderPerformance();
+      this.applyFlatpickr();
     } catch (e) {
       if (filters) filters.innerHTML = '';
       list.innerHTML = `<p style="color:#c00;padding:10px;">${this.escapeHtml(e.message)}</p>`;
+    }
+  }
+
+  onPerfDateChange() {
+    const el = document.getElementById('perf-date');
+    this.perfDate = (el && el.value) || this.getTodayDate();
+    this.loadPerformance();
+  }
+
+  // Метка бригады для текста агроному.
+  perfBrigadeLabel() {
+    if (this.config && this.config.demoMode) return 'демо';
+    if (this.me && this.me.name) return this.me.name;
+    if (this.me && this.me.login) return this.me.login;
+    return '—';
+  }
+
+  // Число га для буфера: «4,20» (запятая как в MAX).
+  fmtHaComma(n) {
+    return (Math.round((Number(n) || 0) * 100) / 100).toFixed(2).replace('.', ',');
+  }
+
+  // «21.07» из YYYY-MM-DD.
+  fmtDayMonth(iso) {
+    const s = String(iso || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    return `${s.slice(8, 10)}.${s.slice(5, 7)}`;
+  }
+
+  // Текст одной плашки — как сообщение в группу «АГРО Отчет».
+  formatAgronomistReportText(row, dateIso) {
+    const cells = (row.cells || []).map(String).filter(Boolean);
+    const cellPart = cells.length
+      ? `, клет.${this.formatRange(cells.join(','))}`
+      : '';
+    const place = `Кв.${row.quarter}${cellPart} · Бр.${this.perfBrigadeLabel()} (${this.fmtHaComma(row.total_ha)}га)`;
+    return [
+      `За ${this.fmtDayMonth(dateIso)}`,
+      place,
+      String(row.work_type || '—'),
+      `Сделано-${this.fmtHaComma(row.done_ha)}га`,
+      `Сегодня -${this.fmtHaComma(row.today_ha)}га`,
+      `Осталось-${this.fmtHaComma(row.remaining_ha)}га`,
+    ].join('\n');
+  }
+
+  async copyPerfReport(idx) {
+    const shown = this._perfShownRows();
+    const row = shown[idx];
+    if (!row) return;
+    const text = this.formatAgronomistReportText(row, this.perfDate);
+    await this._copyText(text);
+  }
+
+  async copyAllPerfReports() {
+    const shown = this._perfShownRows();
+    if (!shown.length) return;
+    const text = shown.map(r => this.formatAgronomistReportText(r, this.perfDate)).join('\n\n');
+    await this._copyText(text);
+  }
+
+  _perfShownRows() {
+    if (!this.perfRows || !this.perfRows.length) return [];
+    return this.perfRows.filter(x =>
+      this.perfWorkTypes.has(x.work_type) && this.perfQuarters.has(String(x.quarter)));
+  }
+
+  async _copyText(text) {
+    const msg = document.getElementById('perf-copy-msg');
+    const show = (t) => { if (msg) { msg.className = 'auth-msg'; msg.textContent = t; } };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+      }
+      show('✓ Скопировано — вставь в группу MAX');
+      setTimeout(() => { if (msg && msg.textContent.startsWith('✓')) msg.textContent = ''; }, 2500);
+    } catch (e) {
+      show('❌ Не удалось скопировать: ' + (e.message || e));
     }
   }
 
@@ -2345,14 +2519,15 @@ class BrigadeAssistant {
     this.renderPerformance();
   }
 
-  // Рендер: чипы фильтров + строки, сгруппированные по культуре (estate),
-  // каждая плашка помечена типом (ряды/механизировано).
+  // Рендер: фильтры + плашки в формате отчёта агроному.
   renderPerformance() {
     const filters = document.getElementById('perf-filters');
     const list = document.getElementById('perf-list');
+    const copyAll = document.getElementById('perf-copy-all');
     if (!filters || !list) return;
     if (!this.perfRows || this.perfRows.length === 0) {
       filters.innerHTML = '';
+      if (copyAll) copyAll.style.display = 'none';
       list.innerHTML = '<p style="color:#888;padding:10px;">Пока ничего не записано — заполни журнал, и тут появятся гектары.</p>';
       return;
     }
@@ -2372,29 +2547,23 @@ class BrigadeAssistant {
       allQ.map(q => chip('q', q, this.perfQuarters.has(q))).join('') + `</div>` +
       `</div>`;
 
-    const shown = this.perfRows.filter(x =>
-      this.perfWorkTypes.has(x.work_type) && this.perfQuarters.has(String(x.quarter)));
+    const shown = this._perfShownRows();
+    if (copyAll) copyAll.style.display = shown.length ? '' : 'none';
     if (shown.length === 0) {
       list.innerHTML = '<p style="color:#888;padding:10px;">Ничего не выбрано в фильтрах.</p>';
       return;
     }
-    const byEstate = new Map();
-    for (const x of shown) {
-      if (!byEstate.has(x.estate)) byEstate.set(x.estate, []);
-      byEstate.get(x.estate).push(x);
-    }
-    let html = '';
-    for (const [estate, rows] of byEstate) {
-      html += `<div class="perf-culture-title">🌱 ${this.escapeHtml(estate)}</div>`;
-      html += rows.map(x => {
-        const kindLabel = x.kind === 'mech' ? 'механизировано' : 'ряды';
-        return `<div class="log-group">
-          <div><b>${this.escapeHtml(x.work_type)}</b> · Кв.${this.escapeHtml(String(x.quarter))} <span class="perf-kind">· ${kindLabel}</span></div>
-          <div style="margin-top:4px;">Сделано: <b>${Number(x.done_ha).toFixed(2)}</b> га · Осталось: <b>${Number(x.remaining_ha).toFixed(2)}</b> га</div>
-        </div>`;
-      }).join('');
-    }
-    list.innerHTML = html;
+    list.innerHTML = shown.map((x, idx) => {
+      const text = this.formatAgronomistReportText(x, this.perfDate);
+      const kindLabel = x.kind === 'mech' ? '🚜' : '🛠';
+      return `<div class="perf-agro-card">
+        <pre class="perf-agro-text">${this.escapeHtml(text)}</pre>
+        <div class="perf-agro-actions">
+          <span class="perf-kind">${kindLabel}</span>
+          <button class="mini-btn" onclick="app.copyPerfReport(${idx})">Скопировать</button>
+        </div>
+      </div>`;
+    }).join('');
   }
 
   // Открывает модалку выбора рабочих (одного или нескольких) с долями кустов,
@@ -2604,14 +2773,9 @@ class BrigadeAssistant {
         return;
       }
       const header = `<div class="report-header">Отчёт с ${this.escapeHtml(from)} по ${this.escapeHtml(to)}</div>`;
-      if (this.config.demoMode) {
-        // Этап 6: два блока — 🛠 Ручные и 🚜 Механизированные.
-        resultDiv.innerHTML = header + this.renderTwoBlocksReportHtml(data.logs);
-      } else {
-        // Прод: один блок «по работникам» как раньше.
-        const byEmp = this.groupLogsByEmployee(data.logs);
-        resultDiv.innerHTML = header + this.renderEmployeeReportHtml(byEmp);
-      }
+      resultDiv.innerHTML = header + this.renderPlatesReportHtml(data.logs, {
+        grandLabel: 'Всего за период',
+      });
     } catch (e) {
       resultDiv.innerHTML = '<p style="color:#c0392b;padding:10px;">❌ ' + e.message + '</p>';
     }

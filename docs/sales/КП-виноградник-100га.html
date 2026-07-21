@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Коммерческое предложение — Помощник Бригадира</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    color: #2c3e50;
+    line-height: 1.55;
+    margin: 0;
+    background: #f5f7fa;
+  }
+  .page {
+    max-width: 800px;
+    margin: 24px auto;
+    background: #fff;
+    padding: 48px 56px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+    border-radius: 6px;
+  }
+  h1 {
+    font-size: 28px;
+    margin: 0 0 6px;
+    color: #1c3d5a;
+  }
+  h2 {
+    font-size: 20px;
+    color: #1c3d5a;
+    margin: 28px 0 12px;
+    border-bottom: 2px solid #6ab0e3;
+    padding-bottom: 6px;
+  }
+  h3 {
+    font-size: 16px;
+    margin: 18px 0 8px;
+    color: #2c3e50;
+  }
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    border-bottom: 3px solid #1c3d5a;
+    padding-bottom: 18px;
+    margin-bottom: 24px;
+  }
+  .brand {
+    font-size: 24px;
+    font-weight: 700;
+    color: #1c3d5a;
+  }
+  .brand .emoji { font-size: 28px; margin-right: 6px; }
+  .brand-tag {
+    color: #6c7a89;
+    font-size: 13px;
+    margin-top: 4px;
+  }
+  .contacts {
+    text-align: right;
+    font-size: 13px;
+    color: #555;
+    line-height: 1.7;
+  }
+  .contacts a { color: #2c3e50; text-decoration: none; }
+  .date {
+    color: #888;
+    font-size: 13px;
+    margin: 4px 0 18px;
+  }
+  .lead {
+    background: linear-gradient(135deg, #eaf4fb, #f3f9fd);
+    border-left: 4px solid #6ab0e3;
+    padding: 18px 22px;
+    margin: 18px 0 24px;
+    border-radius: 4px;
+  }
+  .lead p { margin: 0; font-size: 15px; }
+  .lead .big {
+    font-size: 22px;
+    font-weight: 700;
+    color: #1c3d5a;
+    display: block;
+    margin-bottom: 4px;
+  }
+  .pain-list, .benefits-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .pain-list li, .benefits-list li {
+    padding: 10px 0 10px 32px;
+    position: relative;
+    border-bottom: 1px solid #ecf0f1;
+  }
+  .pain-list li:before {
+    content: '⚠️';
+    position: absolute;
+    left: 0;
+    top: 9px;
+  }
+  .benefits-list li:before {
+    content: '✓';
+    position: absolute;
+    left: 4px;
+    top: 9px;
+    color: #27ae60;
+    font-weight: 700;
+    font-size: 18px;
+  }
+  .pain-list li:last-child, .benefits-list li:last-child { border-bottom: none; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0 18px;
+    font-size: 14px;
+  }
+  th, td {
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: 1px solid #e1e6eb;
+  }
+  th {
+    background: #f7f9fb;
+    color: #1c3d5a;
+    font-weight: 600;
+    border-bottom: 2px solid #d4dde4;
+  }
+  td.num {
+    text-align: right;
+    font-weight: 600;
+    color: #27ae60;
+  }
+  td.label-grey { color: #6c7a89; font-size: 13px; }
+  .total-row td {
+    background: #eaf4fb;
+    font-weight: 700;
+    border-top: 2px solid #6ab0e3;
+    color: #1c3d5a;
+  }
+  .total-row td.num { color: #1c3d5a; font-size: 16px; }
+  .price-card {
+    border: 1px solid #d4dde4;
+    border-radius: 8px;
+    padding: 20px 22px;
+    margin: 14px 0;
+    background: #fafbfc;
+  }
+  .price-card.recommended {
+    border-color: #6ab0e3;
+    background: #eaf4fb;
+    position: relative;
+  }
+  .price-card.recommended:after {
+    content: 'Рекомендуем';
+    position: absolute;
+    top: 14px;
+    right: 18px;
+    background: #1c3d5a;
+    color: #fff;
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 10px;
+    letter-spacing: 0.5px;
+  }
+  .price-card h3 {
+    margin-top: 0;
+    color: #1c3d5a;
+    font-size: 17px;
+  }
+  .price-card .price-line {
+    font-size: 15px;
+    margin: 4px 0;
+    color: #34495e;
+  }
+  .price-card .total {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed #b9c5d0;
+    font-size: 16px;
+    font-weight: 700;
+    color: #1c3d5a;
+  }
+  .timeline {
+    display: flex;
+    gap: 12px;
+    margin: 14px 0;
+  }
+  .step {
+    flex: 1;
+    background: #f7f9fb;
+    padding: 14px 12px;
+    border-radius: 6px;
+    text-align: center;
+    border: 1px solid #e1e6eb;
+  }
+  .step .num-circle {
+    display: inline-block;
+    width: 28px;
+    height: 28px;
+    line-height: 28px;
+    border-radius: 50%;
+    background: #6ab0e3;
+    color: #fff;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  .step .step-title {
+    font-weight: 600;
+    color: #1c3d5a;
+    font-size: 13px;
+    margin-bottom: 2px;
+  }
+  .step .step-time {
+    color: #888;
+    font-size: 12px;
+  }
+  .signature {
+    margin-top: 36px;
+    padding-top: 22px;
+    border-top: 1px solid #d4dde4;
+  }
+  .signature .from {
+    color: #888;
+    font-size: 13px;
+    margin-bottom: 4px;
+  }
+  .signature .name {
+    font-size: 17px;
+    font-weight: 600;
+    color: #1c3d5a;
+  }
+  .signature .role {
+    color: #6c7a89;
+    font-size: 13px;
+    margin: 2px 0 8px;
+  }
+  .signature .sig-contacts {
+    font-size: 13px;
+    color: #34495e;
+    line-height: 1.7;
+  }
+  .footer-note {
+    margin-top: 24px;
+    padding: 14px 18px;
+    background: #fff8e1;
+    border-radius: 6px;
+    color: #6d5d2f;
+    font-size: 13px;
+    border-left: 3px solid #f5c87a;
+  }
+  .page-break { page-break-before: always; }
+  @media print {
+    body { background: #fff; }
+    .page {
+      box-shadow: none;
+      margin: 0;
+      max-width: none;
+      padding: 18mm 18mm;
+      border-radius: 0;
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <!-- ШАПКА -->
+  <div class="header">
+    <div>
+      <div class="brand"><span class="emoji">🍇</span>Помощник Бригадира</div>
+      <div class="brand-tag">Учёт полевых работ для виноградников и садов</div>
+    </div>
+    <div class="contacts">
+      Наталия<br>
+      <a href="tel:+79783116389">+7 978 311 63 89</a><br>
+      <a href="mailto:mankona7@yandex.com">mankona7@yandex.com</a>
+    </div>
+  </div>
+
+  <h1>Коммерческое предложение</h1>
+  <div class="date">Для собственника виноградника · площадь 100 га</div>
+
+  <!-- ГЛАВНОЕ В ОДНОЙ ФРАЗЕ -->
+  <div class="lead">
+    <span class="big">Помощник Бригадира окупается за 1–2 месяца.</span>
+    <p>Программа на телефоне у бригадира — без бумажных нарядов, с точным контролем сделанных и недоделанных рядов. Для виноградника 100 га совокупная экономия — <b>от 2,5 до 3 млн ₽ в сезон</b>.</p>
+  </div>
+
+  <!-- БОЛИ -->
+  <h2>Что обычно «уходит мимо кассы» у собственника</h2>
+  <ul class="pain-list">
+    <li><b>Недоделанные работы обнаруживаются поздно.</b> Бухгалтер видит, что в квартале «не хватает 200 кустов», но не знает в какой клетке и на каких рядах. На поле никто не идёт искать — узнаёте на сборе урожая, когда уже поздно.</li>
+    <li><b>Задвоения рядов обнаруживаются вручную.</b> Два рабочих «делали» один и тот же ряд в разные дни. Бухгалтер ловит это по сумме кустов, но идёт разбираться к бригадирам — теряет день.</li>
+    <li><b>Бригадир оформляет наряды по 2–3 часа в день после работы</b> — либо во время рабочего дня, отвлекаясь от полей. Бухгалтер потом ещё столько же тратит на перенос данных в Excel.</li>
+    <li><b>Бумажные тетради теряются, рвутся, переписываются.</b> История работ за сезон зависит от одного человека и одной тетрадки.</li>
+  </ul>
+
+  <!-- ЧТО ДЕЛАЕТ ПОМОЩНИК -->
+  <h2>Что делает Помощник Бригадира</h2>
+  <ul class="benefits-list">
+    <li><b>Точечно показывает где недоделано.</b> Вкладка «Сверка» — «обрезка кв.4 кл.2, осталось ряды 41–50». Можно отправить бригаду доделать **до конца сезона**, а не узнать постфактум.</li>
+    <li><b>Не даёт записать чужой ряд.</b> Если ряд уже занят — система блокирует и отправляет конфликт в «Спорные». Бригадиры спорят сразу в моменте, а не через неделю с бухгалтером.</li>
+    <li><b>Бригадир вводит данные на телефоне за минуты в перерывах между работой</b> — никаких вечерних бумаг. Бухгалтер открывает готовый отчёт за период и копирует в Excel/1С.</li>
+    <li><b>Все данные сохраняются на сервере.</b> История за все годы. Год к году сравнения, отчёты по работникам, экспорт.</li>
+  </ul>
+
+</div>
+
+<!-- СТРАНИЦА 2 -->
+<div class="page page-break">
+
+  <h2>Расчёт экономии для виноградника 100 га</h2>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Источник экономии</th>
+        <th style="text-align:right;">В год, ₽</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><b>Спасённый урожай</b><br><span class="label-grey">5% урожая, которые сейчас «теряются» из-за недоделок (площадь 100 га × 10 тонн/га × 50 ₽/кг)</span></td>
+        <td class="num">2 000 000 – 2 500 000</td>
+      </tr>
+      <tr>
+        <td><b>Экономия времени бухгалтерии</b><br><span class="label-grey">60–80 часов в месяц переработки на наряды и переносы данных</span></td>
+        <td class="num">300 000 – 450 000</td>
+      </tr>
+      <tr>
+        <td><b>Бригадир освобождён для полей</b><br><span class="label-grey">2–3 часа в день — это контроль качества, обход проблемных участков</span></td>
+        <td class="num">100 000 – 200 000</td>
+      </tr>
+      <tr>
+        <td><b>Найденные задвоения</b><br><span class="label-grey">1–2% от ФОТ обрезки, которые сейчас находятся выборочно</span></td>
+        <td class="num">40 000 – 80 000</td>
+      </tr>
+      <tr class="total-row">
+        <td>ИТОГО экономии в год</td>
+        <td class="num">2 500 000 – 3 200 000 ₽</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p style="font-size:13px;color:#6c7a89;margin-top:-8px;">Цифры приведены для технического сорта винограда при средней урожайности 10 т/га. Для столовых сортов и более высокой урожайности экономия пропорционально больше.</p>
+
+  <h2>Что входит в продукт</h2>
+
+  <table>
+    <tbody>
+      <tr>
+        <td>📱 Программа на телефоне бригадира — ввод работ по рядам/часам/гектарам/километрам</td>
+      </tr>
+      <tr>
+        <td>📊 Журнал — все записи по дням, поиск по работнику и ряду</td>
+      </tr>
+      <tr>
+        <td>📈 Отчёт за период — для бухгалтерии, по работникам, с группировкой</td>
+      </tr>
+      <tr>
+        <td>🔍 Сверка по клетке — что сделано и где недоделано, точно по рядам</td>
+      </tr>
+      <tr>
+        <td>⚠️ Спорные — автоматическое обнаружение задвоений и деление кустов между работниками</td>
+      </tr>
+      <tr>
+        <td>📐 Выполнение — гектары сделано/осталось по культурам, фильтр по видам работ</td>
+      </tr>
+      <tr>
+        <td>🎓 Обучающий гайд — 16 шагов, бригадир разберётся сам за 3 минуты</td>
+      </tr>
+      <tr>
+        <td>🔄 Все обновления и улучшения функционала — на весь срок сопровождения</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Стоимость — два варианта на выбор</h2>
+
+  <div class="price-card recommended">
+    <h3>Вариант A. Подписка (SaaS)</h3>
+    <div class="price-line"><b>Аудит хозяйства:</b> 20 000 ₽ <span class="label-grey">(зачитывается в первый платёж)</span></div>
+    <div class="price-line"><b>Внедрение:</b> 60 000 – 80 000 ₽ единовременно <span class="label-grey">(загрузка инвентаризации, обучение бригадиров)</span></div>
+    <div class="price-line"><b>Подписка:</b> 15 000 ₽/месяц <span class="label-grey">(всё включено — сопровождение, обновления, поддержка)</span></div>
+    <div class="total">Первый год: ~260 000 ₽ · далее: 180 000 ₽ в год</div>
+  </div>
+
+  <div class="price-card">
+    <h3>Вариант B. Покупка лицензии</h3>
+    <div class="price-line"><b>Аудит хозяйства:</b> 20 000 ₽ <span class="label-grey">(зачитывается в покупку)</span></div>
+    <div class="price-line"><b>Лицензия + внедрение:</b> 450 000 ₽ единовременно</div>
+    <div class="price-line"><b>Сопровождение:</b> 5 000 ₽/месяц <span class="label-grey">(обновления, поддержка)</span></div>
+    <div class="total">Первый год: ~510 000 ₽ · далее: 60 000 ₽ в год</div>
+  </div>
+
+  <p style="font-size:13px;color:#6c7a89;margin-top:8px;">Точная цена определяется после аудита — зависит от объёма инвентаризации, специфики хозяйства и желаемых интеграций (например, 1С).</p>
+
+</div>
+
+<!-- СТРАНИЦА 3 -->
+<div class="page page-break">
+
+  <h2>Сроки внедрения</h2>
+
+  <div class="timeline">
+    <div class="step">
+      <div class="num-circle">1</div>
+      <div class="step-title">Аудит</div>
+      <div class="step-time">2–3 дня</div>
+    </div>
+    <div class="step">
+      <div class="num-circle">2</div>
+      <div class="step-title">Внедрение</div>
+      <div class="step-time">5–7 дней</div>
+    </div>
+    <div class="step">
+      <div class="num-circle">3</div>
+      <div class="step-title">Обучение бригады</div>
+      <div class="step-time">1 день</div>
+    </div>
+    <div class="step">
+      <div class="num-circle">4</div>
+      <div class="step-title">Работа в поле</div>
+      <div class="step-time">сразу</div>
+    </div>
+  </div>
+
+  <p>От первого звонка до начала реальной работы в поле — <b>10–14 рабочих дней</b>. Не нужно ждать межсезонья — внедрить можно посреди сезона, бригада продолжит работу с первого дня.</p>
+
+  <h2>Что нужно от вас для старта</h2>
+
+  <ul class="benefits-list">
+    <li>Инвентаризация хозяйства — список кварталов, клеток, рядов и кустов (есть в любом учётном виде — Excel, 1С, тетрадь).</li>
+    <li>Список рабочих бригады (ФИО — без паспортных данных).</li>
+    <li>Список видов работ, которые ведутся (обрезка, опрыскивание, подвязка и т.п.).</li>
+    <li>Контакты бригадира и бухгалтера для обучения.</li>
+    <li>1–2 простых смартфона у бригадиров с интернетом (свой или рабочий — подходит любой Android от 2020 года).</li>
+  </ul>
+
+  <h2>Гарантии</h2>
+
+  <ul class="benefits-list">
+    <li><b>Окупаемость в первый сезон.</b> Если за первые 6 месяцев работы экономия не превысит стоимость подписки — возвращаем деньги за неиспользованный период.</li>
+    <li><b>Данные принадлежат вам.</b> В любой момент можно выгрузить всю историю в Excel и забрать с собой.</li>
+    <li><b>Поддержка на русском.</b> Письменно, по телефону, в Telegram — отвечаем в рабочие часы в течение часа.</li>
+    <li><b>Без скрытых платежей.</b> Указанная сумма — единственная.</li>
+  </ul>
+
+  <div class="footer-note">
+    <b>Что дальше?</b> Свяжитесь — мы согласуем удобное время для короткого онлайн-аудита (30–40 минут). По итогам аудита уточним точную стоимость и предложим конкретные сроки.
+  </div>
+
+  <div class="signature">
+    <div class="from">С уважением,</div>
+    <div class="name">Наталия</div>
+    <div class="role">Помощник Бригадира · разработка и внедрение</div>
+    <div class="sig-contacts">
+      📞 <a href="tel:+79783116389" style="color:#34495e;text-decoration:none;">+7 978 311 63 89</a><br>
+      ✉️ <a href="mailto:mankona7@yandex.com" style="color:#34495e;text-decoration:none;">mankona7@yandex.com</a>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

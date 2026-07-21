@@ -114,13 +114,35 @@ test('сортировка: по культуре, кварталу (число�
   );
 });
 
-test('mech: нечисловые и отрицательные гектары игнорируются', () => {
+test('today_ha: только логи за выбранную дату; cells — клетки с накопленным done', () => {
   const logs = [
-    { estate_id: 'Яблоня', work_type: 'Вспашка', quarter: '2', cell: '', rows: '', measure_mode: 'hectares', hectares: 0.3 },
-    { estate_id: 'Яблоня', work_type: 'Вспашка', quarter: '2', cell: '', rows: '', measure_mode: 'hectares', hectares: -0.5 },
-    { estate_id: 'Яблоня', work_type: 'Вспашка', quarter: '2', cell: '', rows: '', measure_mode: 'hectares', hectares: NaN },
+    { date: '2026-07-18', estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'A', rows: '1,2', measure_mode: 'rows_bushes' },
+    { date: '2026-07-19', estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'A', rows: '3', measure_mode: 'rows_bushes' },
+    { date: '2026-07-19', estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'B', rows: '1', measure_mode: 'rows_bushes' },
+  ];
+  const out = buildHectaresReport(logs, fakeCellHa, fakeQuarterTotalHa, { todayDate: '2026-07-19' });
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].done_ha, 0.4); // ряды 1,2,3 в A + 1 в B = 0.3+0.1
+  assert.strictEqual(out[0].today_ha, 0.2); // ряд 3 в A + ряд 1 в B
+  assert.deepStrictEqual(out[0].cells, ['A', 'B']);
+});
+
+test('today_ha mech: сумма га только за дату', () => {
+  const logs = [
+    { date: '2026-07-18', estate_id: 'Яблоня', work_type: 'Вспашка', quarter: '2', cell: '1', rows: '', measure_mode: 'hectares', hectares: 0.3 },
+    { date: '2026-07-19', estate_id: 'Яблоня', work_type: 'Вспашка', quarter: '2', cell: '2', rows: '', measure_mode: 'hectares', hectares: 0.2 },
+  ];
+  const out = buildHectaresReport(logs, fakeCellHa, fakeQuarterTotalHa, { todayDate: '2026-07-19' });
+  assert.strictEqual(out[0].done_ha, 0.5);
+  assert.strictEqual(out[0].today_ha, 0.2);
+  assert.deepStrictEqual(out[0].cells, ['1', '2']);
+});
+
+test('без todayDate: today_ha = 0, cells всё равно заполнены', () => {
+  const logs = [
+    { estate_id: 'Яблоня', work_type: 'Обрезка', quarter: '2', cell: 'A', rows: '1', measure_mode: 'rows_bushes' },
   ];
   const out = buildHectaresReport(logs, fakeCellHa, fakeQuarterTotalHa);
-  assert.strictEqual(out.length, 1);
-  assert.strictEqual(out[0].done_ha, 0.3);
+  assert.strictEqual(out[0].today_ha, 0);
+  assert.deepStrictEqual(out[0].cells, ['A']);
 });
