@@ -887,6 +887,19 @@ class BrigadeAssistant {
     return p ? p.name : '';
   }
 
+  peopleCountForName(name) {
+    const p = (this.present || []).find(x => x.name === name);
+    if (!p || p.people_count == null || p.people_count === '') return null;
+    const n = Number(p.people_count);
+    return Number.isInteger(n) && n >= 1 ? n : null;
+  }
+
+  formatEmployeeLabel(name) {
+    const n = this.peopleCountForName(name);
+    if (n != null) return `${name} ${n} чел.`;
+    return name || '—';
+  }
+
   // HTML выпадающего списка всей бригады с отметками явки.
   renderRosterHtml() {
     const presentIds = new Set(this.present.map(p => p.employee_id));
@@ -1375,10 +1388,11 @@ class BrigadeAssistant {
   renderPlatesReportHtml(logs, opts = {}) {
     const grandLabel = opts.grandLabel || 'Всего за период';
     const emptyText = opts.emptyText || 'За этот период записей нет.';
+    const withPeopleCount = !!opts.withPeopleCount;
     const manualLogs = (logs || []).filter(l => this.kindOfWorkType(l.work_type) !== 'mechanized');
     const mechLogs = (logs || []).filter(l => this.kindOfWorkType(l.work_type) === 'mechanized');
-    const manualBlock = manualLogs.length > 0 ? this.renderManualBlockHtml(manualLogs) : '';
-    const mechBlock = mechLogs.length > 0 ? this.renderMechBlockHtml(mechLogs) : '';
+    const manualBlock = manualLogs.length > 0 ? this.renderManualBlockHtml(manualLogs, { withPeopleCount }) : '';
+    const mechBlock = mechLogs.length > 0 ? this.renderMechBlockHtml(mechLogs, { withPeopleCount }) : '';
     if (!manualBlock && !mechBlock) {
       return `<p class="chips-empty">${this.escapeHtml(emptyText)}</p>`;
     }
@@ -1442,7 +1456,7 @@ class BrigadeAssistant {
     return arr;
   }
 
-  renderManualBlockHtml(logs) {
+  renderManualBlockHtml(logs, { withPeopleCount = false } = {}) {
     const groups = this.groupManualLogs(logs);
     const groupBlocks = groups.map(g => {
       const emoji = this.cultureEmoji(g.estate);
@@ -1462,7 +1476,10 @@ class BrigadeAssistant {
         } else {
           measure = `${this.fmtRows(r.rowCount)} рядов`;
         }
-        return `<div class="report-line">${this.escapeHtml(r.employee)} — ${measure}${place}</div>`;
+        const empLabel = withPeopleCount
+          ? this.formatEmployeeLabel(r.employee)
+          : (r.employee || '—');
+        return `<div class="report-line">${this.escapeHtml(empLabel)} — ${measure}${place}</div>`;
       }).join('');
       // Итого только внутри пары «вид работ + культура» — культуры не смешиваем.
       const gTot = g.rowsList.reduce((t, r) => {
@@ -1540,7 +1557,7 @@ class BrigadeAssistant {
     return arr;
   }
 
-  renderMechBlockHtml(logs) {
+  renderMechBlockHtml(logs, { withPeopleCount = false } = {}) {
     const groups = this.groupMechLogs(logs);
     const groupBlocks = groups.map(g => {
       const emoji = this.cultureEmoji(g.estate);
@@ -1561,7 +1578,10 @@ class BrigadeAssistant {
           const rowsRange = r.rows ? `ряды ${this.escapeHtml(this.formatRange(r.rows))}, ` : '';
           measure = `${rowsRange}${r.hectares} га`;
         }
-        return `<div class="report-line">${this.escapeHtml(r.employee)} — ${measure}${place}</div>`;
+        const empLabel = withPeopleCount
+          ? this.formatEmployeeLabel(r.employee)
+          : (r.employee || '—');
+        return `<div class="report-line">${this.escapeHtml(empLabel)} — ${measure}${place}</div>`;
       }).join('');
       const gTot = g.rowsList.reduce((t, r) => {
         t.hectares += Number(r.hectares) || 0;
@@ -1656,6 +1676,7 @@ class BrigadeAssistant {
     return this.renderPlatesReportHtml(this.entries, {
       grandLabel: 'Всего за день',
       emptyText: 'Пока пусто.',
+      withPeopleCount: true,
     });
   }
 
