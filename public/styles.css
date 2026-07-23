@@ -837,7 +837,9 @@ button:active {
 }
 
 .chip {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     border: 1px solid #bbb;
     border-radius: 14px;
     padding: 6px 12px;
@@ -850,6 +852,25 @@ button:active {
     background: #6ab0e3;
     color: #fff;
     border-color: #4a8fc2;
+}
+
+.chip-name {
+    cursor: pointer;
+}
+
+.chip-count {
+    width: 3.2em;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    padding: 2px 4px;
+    font-size: 13px;
+    text-align: center;
+    background: #fff;
+    color: #222;
+}
+
+.chip.on .chip-count {
+    border-color: #fff;
 }
 
 .chips-empty {

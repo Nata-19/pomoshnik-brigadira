@@ -836,9 +836,18 @@ class BrigadeAssistant {
         <div class="chips">
           ${this.present.length === 0
             ? '<span class="chips-empty">Пока никто не отмечен</span>'
-            : this.present.map(p =>
-                `<span class="chip ${p.employee_id === this.selectedEmployeeId ? 'on' : ''}" onclick="app.selectWorker(${p.employee_id})">${this.escapeHtml(p.name)}</span>`
-              ).join('')}
+            : this.present.map(p => {
+                const on = p.employee_id === this.selectedEmployeeId ? 'on' : '';
+                const val = (p.people_count != null && p.people_count !== '') ? String(p.people_count) : '';
+                return `<span class="chip ${on}">
+    <span class="chip-name" onclick="app.selectWorker(${p.employee_id})">${this.escapeHtml(p.name)}</span>
+    <input class="chip-count" type="number" min="1" max="999" inputmode="numeric"
+      placeholder="чел." title="К-во человек сегодня"
+      value="${this.escapeHtml(val)}"
+      onclick="event.stopPropagation()"
+      onchange="app.savePeopleCount(${p.employee_id}, this.value)">
+  </span>`;
+              }).join('')}
         </div>
       </div>
 
@@ -1924,6 +1933,42 @@ class BrigadeAssistant {
   selectWorker(employeeId) {
     this.selectedEmployeeId = employeeId;
     this.renderInput();
+  }
+
+  async savePeopleCount(employeeId, rawValue) {
+    let people_count;
+    const trimmed = String(rawValue == null ? '' : rawValue).trim();
+    if (trimmed === '') {
+      people_count = null;
+    } else {
+      const n = Number(trimmed);
+      if (!Number.isInteger(n) || n < 1 || n > 999) {
+        alert('К-во чел.: целое от 1 до 999 или пусто');
+        await this.loadAttendance(this.inputDate);
+        this.renderInput();
+        return;
+      }
+      people_count = n;
+    }
+    try {
+      const r = await this.apiFetch('/api/attendance', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date: this.inputDate,
+          employee_id: employeeId,
+          people_count,
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'Не удалось сохранить к-во чел.');
+      const row = this.present.find(p => p.employee_id === employeeId);
+      if (row) row.people_count = people_count;
+    } catch (e) {
+      alert('Ошибка: ' + e.message);
+      await this.loadAttendance(this.inputDate);
+      this.renderInput();
+    }
   }
 
   async addEntry() {
