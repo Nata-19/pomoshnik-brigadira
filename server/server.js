@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const auth = require('./auth');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const { normalizePeopleCount } = require('./peopleCount');
 
 const app = express();
 app.set('trust proxy', 1); // за HTTPS-прокси Render
@@ -222,6 +223,7 @@ const getSecret = () => SESSION_SECRET;
     await pool.query(`ALTER TABLE work_types ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'manual'`);
     await pool.query(`ALTER TABLE work_types ADD COLUMN IF NOT EXISTS default_measure_mode TEXT NOT NULL DEFAULT 'rows_bushes'`);
     await pool.query(`ALTER TABLE attendance ADD COLUMN IF NOT EXISTS demo_session_id TEXT REFERENCES demo_sessions(id) ON DELETE CASCADE`);
+    await pool.query(`ALTER TABLE attendance ADD COLUMN IF NOT EXISTS people_count INTEGER`);
     await pool.query(`ALTER TABLE work_logs ADD COLUMN IF NOT EXISTS demo_session_id TEXT REFERENCES demo_sessions(id) ON DELETE CASCADE`);
     // disputed_rows.demo_session_id создаётся без FK в общем CREATE (в боевом demo_sessions нет).
     // В демо навешиваем каскад отдельно и идемпотентно — чтобы спорные чистились вместе с сессией.
@@ -932,7 +934,7 @@ app.get('/api/attendance', authOrDemo, async (req, res) => {
     let r;
     if (DEMO_MODE) {
       r = await pool.query(
-        `SELECT a.employee_id, e.name
+        `SELECT a.employee_id, e.name, a.people_count
          FROM attendance a JOIN employees e ON e.id = a.employee_id
          WHERE a.demo_session_id = $1 AND a.date = $2
          ORDER BY e.name`,
@@ -940,7 +942,7 @@ app.get('/api/attendance', authOrDemo, async (req, res) => {
       );
     } else {
       r = await pool.query(
-        `SELECT a.employee_id, e.name
+        `SELECT a.employee_id, e.name, a.people_count
          FROM attendance a JOIN employees e ON e.id = a.employee_id
          WHERE a.brigadier_id = $1 AND a.date = $2
          ORDER BY e.name`,
@@ -1018,6 +1020,46 @@ app.delete('/api/attendance', authOrDemo, async (req, res) => {
       );
     }
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/attendance', authOrDemo, async (req, res) => {
+  try {
+    const { date, employee_id, people_count: rawCount } = req.body || {};
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
+    }
+    const eid = parseInt(employee_id, 10);
+    if (!Number.isInteger(eid)) {
+      return res.status(400).json({ error: 'Неверный id сотрудника' });
+    }
+    let peopleCount;
+    try {
+      peopleCount = normalizePeopleCount(rawCount);
+    } catch (e) {
+      return res.status(e.statusCode || 400).json({ error: e.message });
+    }
+
+    let result;
+    if (DEMO_MODE) {
+      result = await pool.query(
+        `UPDATE attendance SET people_count = $1
+         WHERE demo_session_id = $2 AND date = $3 AND employee_id = $4`,
+        [peopleCount, req.demo_session_id, date, eid]
+      );
+    } else {
+      result = await pool.query(
+        `UPDATE attendance SET people_count = $1
+         WHERE brigadier_id = $2 AND date = $3 AND employee_id = $4`,
+        [peopleCount, req.brigadier.id, date, eid]
+      );
+    }
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Сначала отметьте сотрудника в явке' });
+    }
+    res.json({ success: true, people_count: peopleCount });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
