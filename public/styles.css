@@ -878,6 +878,56 @@ button:active {
     font-size: 13px;
 }
 
+.rc-closure-bar {
+    margin-bottom: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.rc-closure-hint {
+    color: #888;
+    font-size: 13px;
+}
+
+.rc-quarter-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.rc-cell-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid #e2e2e2;
+    border-radius: 8px;
+    background: #fff;
+}
+
+.rc-cell-link {
+    border: none;
+    background: none;
+    color: #2c6fad;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: underline;
+}
+
+.rc-cell-status {
+    font-size: 13px;
+}
+
+.rc-cell-nums {
+    color: #666;
+    font-size: 13px;
+    flex: 1;
+}
+
 .sel-emp {
     font-size: 14px;
     margin-bottom: 8px;

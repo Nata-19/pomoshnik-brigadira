@@ -701,13 +701,13 @@ class BrigadeAssistant {
 
         <div class="tab-content" id="reconcile-tab">
           <div class="ctx-block">
-            <div class="block-label">Сверка по клетке</div>
+            <div class="block-label">Сверка</div>
             <div class="chips-row">
               <select id="rc-quarter" class="chip-select" onchange="app.onReconcileQuarterChange()">
                 <option value="">Квартал...</option>
               </select>
               <select id="rc-cell" class="chip-select">
-                <option value="">Клетка...</option>
+                <option value="">Все клетки...</option>
               </select>
               <select id="rc-worktype" class="chip-select">
                 <option value="">Вид работ...</option>
@@ -1080,7 +1080,7 @@ class BrigadeAssistant {
       { target: '#i2-add-btn', text: 'Жми «Добавить» — запись попадёт в плашку «Всего за день» внизу.' },
       { target: '#tab-logs', text: 'Журнал: здесь видно номера рядов, которые делал каждый работник — на каком квартале, клетке и виде работ. Помогает найти, кто делал конкретный ряд.' },
       { target: '#tab-report', text: 'Отчёт за период: отчёт по диапазону дат — для бухгалтерии, итоги.' },
-      { target: '#tab-reconcile', text: 'Сверка: что сделано и что осталось по конкретной клетке. Помогает найти неучтённые ряды.' },
+      { target: '#tab-reconcile', text: 'Сверка: клетка или весь квартал по виду работ. Закрыть — метка, что бригада здесь уже не работает.' },
       { target: '#tab-disputed', text: 'Спорные: если двое работали на одном ряду — конфликт попадает сюда. Можно поделить долю или вернуть ряд одному.' },
       { target: '#tab-perf', text: 'Выполнение: сколько гектаров сделано и осталось по культурам. Под кнопкой 🔍 Фильтры — выбор по видам работ и кварталам.' },
       { target: null, text: 'Если ввёл что-то по ошибке — открой запись в Журнале и нажми «Удалить» или «Спорный».' },
@@ -2369,7 +2369,7 @@ class BrigadeAssistant {
     }
     // Клетки зависят от квартала: сбрасываем и, если квартал сохранён, перезагружаем.
     const cSel = document.getElementById('rc-cell');
-    if (cSel) cSel.innerHTML = '<option value="">Клетка...</option>';
+    if (cSel) cSel.innerHTML = '<option value="">Все клетки...</option>';
     if (qSel && qSel.value) this.onReconcileQuarterChange();
     if (res && !this.estate) {
       res.style.display = 'block';
@@ -2382,14 +2382,14 @@ class BrigadeAssistant {
     const qSel = document.getElementById('rc-quarter');
     const cSel = document.getElementById('rc-cell');
     if (!qSel || !cSel) return;
-    cSel.innerHTML = '<option value="">Клетка...</option>';
+    cSel.innerHTML = '<option value="">Все клетки...</option>';
     if (!qSel.value) return;
     const cells = await this.loadCells(qSel.value);
-    cSel.innerHTML = '<option value="">Клетка...</option>' +
+    cSel.innerHTML = '<option value="">Все клетки...</option>' +
       cells.map(c => `<option value="${this.escapeHtml(c)}">${this.escapeHtml(c)}</option>`).join('');
   }
 
-  // Запросить сверку по выбранному разрезу.
+  // Запросить сверку: одна клетка или весь квартал (клетка пустая).
   async loadRowsStatus() {
     const res = document.getElementById('reconcile-result');
     if (!res) return;
@@ -2401,12 +2401,26 @@ class BrigadeAssistant {
     const quarter = (document.getElementById('rc-quarter') || {}).value || '';
     const cell = (document.getElementById('rc-cell') || {}).value || '';
     const workType = (document.getElementById('rc-worktype') || {}).value || '';
-    if (!quarter || !cell || !workType) {
-      res.innerHTML = '<p style="color:#888;padding:10px;">Выбери квартал, клетку и вид работ</p>';
+    if (!quarter || !workType) {
+      res.innerHTML = '<p style="color:#888;padding:10px;">Выбери квартал и вид работ (клетку — по желанию)</p>';
       return;
     }
     res.innerHTML = '<p style="padding:10px;">⏳ Загрузка...</p>';
+    this._rcLast = { estate: this.estate, quarter, cell, workType };
     try {
+      if (!cell) {
+        const url = '/api/rows-status/quarter?estate=' + encodeURIComponent(this.estate) +
+          '&quarter=' + encodeURIComponent(quarter) +
+          '&work_type=' + encodeURIComponent(workType);
+        const r = await this.apiFetch(url);
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          res.innerHTML = `<p style="color:#c00;padding:10px;">${this.escapeHtml(data.error || 'Ошибка')}</p>`;
+          return;
+        }
+        this.renderQuarterRowsStatus(data);
+        return;
+      }
       const url = '/api/rows-status?estate=' + encodeURIComponent(this.estate) +
         '&quarter=' + encodeURIComponent(quarter) +
         '&cell=' + encodeURIComponent(cell) +
@@ -2423,7 +2437,7 @@ class BrigadeAssistant {
     }
   }
 
-  // Рендер сверки: сводка + единый список несделанных (спорные с пометкой).
+  // Рендер сверки одной клетки: сводка + несделанные + Закрыть/Открыть.
   renderRowsStatus(data) {
     const res = document.getElementById('reconcile-result');
     if (!res) return;
@@ -2454,7 +2468,99 @@ class BrigadeAssistant {
         + '</div>';
     }
 
-    res.innerHTML = summary + listHtml;
+    const closed = !!data.closed;
+    const statusLine = `<div class="rc-closure-bar"><b>Статус:</b> ${closed ? 'Закрыта' : (data.fullyDone ? 'Готова к закрытию' : 'Открыта')}`
+      + (closed
+        ? ` <button type="button" class="mini-btn" onclick="app.openCellClosure()">Открыть</button>`
+        : (data.canClose
+          ? ` <button type="button" class="mini-btn" onclick="app.closeCellClosure()">Закрыть</button>`
+          : ` <span class="rc-closure-hint">Закрыть нельзя: есть пропуски или спорные</span>`))
+      + `</div>`;
+
+    res.innerHTML = statusLine + summary + listHtml;
+  }
+
+  // Обзор квартала: все клетки + статусы + кнопки.
+  renderQuarterRowsStatus(data) {
+    const res = document.getElementById('reconcile-result');
+    if (!res) return;
+    const cells = data.cells || [];
+    if (cells.length === 0) {
+      res.innerHTML = '<p style="color:#888;padding:10px;">В квартале нет клеток.</p>';
+      return;
+    }
+    const rows = cells.map((c) => {
+      const cellEsc = this.escapeHtml(String(c.cell));
+      const label = this.escapeHtml(c.statusLabel || '—');
+      const nums = `сделано ${this.fmtRows(c.doneRows)} / осталось ${this.fmtRows(c.remainingRows)}`;
+      let btn = '';
+      if (c.closed) {
+        btn = `<button type="button" class="mini-btn" onclick="event.stopPropagation(); app.openCellClosure('${cellEsc}')">Открыть</button>`;
+      } else if (c.canClose) {
+        btn = `<button type="button" class="mini-btn" onclick="event.stopPropagation(); app.closeCellClosure('${cellEsc}')">Закрыть</button>`;
+      }
+      return `<div class="rc-cell-row">
+        <button type="button" class="rc-cell-link" onclick="app.openReconcileCell('${cellEsc}')">Клетка ${cellEsc}</button>
+        <span class="rc-cell-status">${label}</span>
+        <span class="rc-cell-nums">${nums}</span>
+        ${btn}
+      </div>`;
+    }).join('');
+    res.innerHTML = `<div class="rc-quarter-list">${rows}</div>`;
+  }
+
+  openReconcileCell(cell) {
+    const cSel = document.getElementById('rc-cell');
+    if (cSel) cSel.value = String(cell);
+    this.loadRowsStatus();
+  }
+
+  async closeCellClosure(cellArg) {
+    const last = this._rcLast || {};
+    const cell = cellArg != null && cellArg !== '' ? String(cellArg) : (last.cell || '');
+    const estate = last.estate || this.estate;
+    const quarter = last.quarter || ((document.getElementById('rc-quarter') || {}).value || '');
+    const workType = last.workType || ((document.getElementById('rc-worktype') || {}).value || '');
+    if (!estate || !quarter || !cell || !workType) {
+      alert('Не хватает квартала, клетки или вида работ');
+      return;
+    }
+    try {
+      const r = await this.apiFetch('/api/cell-closures', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ estate, quarter, cell, work_type: workType }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'Не удалось закрыть');
+      await this.loadRowsStatus();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async openCellClosure(cellArg) {
+    const last = this._rcLast || {};
+    const cell = cellArg != null && cellArg !== '' ? String(cellArg) : (last.cell || '');
+    const estate = last.estate || this.estate;
+    const quarter = last.quarter || ((document.getElementById('rc-quarter') || {}).value || '');
+    const workType = last.workType || ((document.getElementById('rc-worktype') || {}).value || '');
+    if (!estate || !quarter || !cell || !workType) {
+      alert('Не хватает квартала, клетки или вида работ');
+      return;
+    }
+    try {
+      const r = await this.apiFetch('/api/cell-closures', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ estate, quarter, cell, work_type: workType }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'Не удалось открыть');
+      await this.loadRowsStatus();
+    } catch (e) {
+      alert(e.message);
+    }
   }
 
   // Загружает отчёт «Выполнение» (га сделано/сегодня/осталось) и рисует плашки агронома.
