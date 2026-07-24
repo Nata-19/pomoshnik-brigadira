@@ -1070,17 +1070,20 @@ app.delete('/api/attendance', authOrDemo, async (req, res) => {
     if (!Number.isInteger(eid)) {
       return res.status(400).json({ error: 'Неверный id сотрудника' });
     }
-    if (DEMO_MODE) {
-      await pool.query(
-        'DELETE FROM attendance WHERE demo_session_id = $1 AND date = $2 AND employee_id = $3',
-        [req.demo_session_id, date, eid]
+    const ownerCol = DEMO_MODE ? 'demo_session_id' : 'brigadier_id';
+    const ownerVal = DEMO_MODE ? req.demo_session_id : req.brigadier.id;
+
+    await withTransaction(pool, async (client) => {
+      await client.query(
+        `DELETE FROM people_allocations
+         WHERE ${ownerCol} = $1 AND date = $2 AND employee_id = $3`,
+        [ownerVal, date, eid]
       );
-    } else {
-      await pool.query(
-        'DELETE FROM attendance WHERE brigadier_id = $1 AND date = $2 AND employee_id = $3',
-        [req.brigadier.id, date, eid]
+      await client.query(
+        `DELETE FROM attendance WHERE ${ownerCol} = $1 AND date = $2 AND employee_id = $3`,
+        [ownerVal, date, eid]
       );
-    }
+    });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1104,19 +1107,43 @@ app.patch('/api/attendance', authOrDemo, async (req, res) => {
       return res.status(e.statusCode || 400).json({ error: e.message });
     }
 
+    const ownerCol = DEMO_MODE ? 'demo_session_id' : 'brigadier_id';
+    const ownerVal = DEMO_MODE ? req.demo_session_id : req.brigadier.id;
+
+    if (peopleCount !== null) {
+      // Разбивка по видам работ уже могла существовать — новое N не должно быть меньше её суммы.
+      const allocRes = await pool.query(
+        `SELECT people_count FROM people_allocations
+         WHERE ${ownerCol} = $1 AND date = $2 AND employee_id = $3`,
+        [ownerVal, date, eid]
+      );
+      const sum = sumAllocationCounts(allocRes.rows);
+      try {
+        assertSumWithinCap(sum, peopleCount);
+      } catch (e) {
+        return res.status(e.statusCode || 400).json({ error: e.message });
+      }
+    }
+
     let result;
-    if (DEMO_MODE) {
-      result = await pool.query(
-        `UPDATE attendance SET people_count = $1
-         WHERE demo_session_id = $2 AND date = $3 AND employee_id = $4`,
-        [peopleCount, req.demo_session_id, date, eid]
-      );
-    } else {
-      result = await pool.query(
-        `UPDATE attendance SET people_count = $1
-         WHERE brigadier_id = $2 AND date = $3 AND employee_id = $4`,
-        [peopleCount, req.brigadier.id, date, eid]
-      );
+    try {
+      await withTransaction(pool, async (client) => {
+        if (peopleCount === null) {
+          // Явку очистили — каскадом удаляем разбивку по видам работ на эту дату/сотрудника.
+          await client.query(
+            `DELETE FROM people_allocations
+             WHERE ${ownerCol} = $1 AND date = $2 AND employee_id = $3`,
+            [ownerVal, date, eid]
+          );
+        }
+        result = await client.query(
+          `UPDATE attendance SET people_count = $1
+           WHERE ${ownerCol} = $2 AND date = $3 AND employee_id = $4`,
+          [peopleCount, ownerVal, date, eid]
+        );
+      });
+    } catch (e) {
+      return res.status(e.statusCode || 500).json({ error: e.message });
     }
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Сначала отметьте сотрудника в явке' });
