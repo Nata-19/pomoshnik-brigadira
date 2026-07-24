@@ -1155,6 +1155,12 @@ button:active {
   min-height: 1.2em;
 }
 
+.alloc-warn {
+  color: #b45309;
+  font-size: 0.85em;
+  margin-top: 4px;
+}
+
 /* Модалка разрешения конфликта рядов (работает в установленном PWA) */
 .modal-overlay {
     position: fixed;

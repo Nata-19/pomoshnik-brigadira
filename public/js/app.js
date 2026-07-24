@@ -10,6 +10,7 @@ class BrigadeAssistant {
     this.employees = [];          // [{id, name}] — полный список бригады
     this.workTypes = [];          // [{id, name}] — общий список видов работ
     this.present = [];            // [{employee_id, name}] — отмеченные сегодня
+    this.allocations = [];        // [{employee_id, work_type, quarter, people_count}] — куски разбивки за день
     this.entries = [];            // записи журнала за выбранную дату
     this.inputDate = this.getTodayDate();
     this.ctxQuarter = '';         // «держащийся» контекст
@@ -59,6 +60,7 @@ class BrigadeAssistant {
       await this.loadEmployees();
       await this.loadWorkTypes();
       await this.loadAttendance(this.inputDate);
+      await this.loadAllocations(this.inputDate);
       await this.loadTodayEntries(this.inputDate);
       this.render();
       this._maybeAutoStartGuide();
@@ -95,6 +97,7 @@ class BrigadeAssistant {
     await this.loadEmployees();
     await this.loadWorkTypes();
     await this.loadAttendance(this.inputDate);
+    await this.loadAllocations(this.inputDate);
     await this.loadTodayEntries(this.inputDate);
     this.render();
     this.scheduleInitialSync();
@@ -230,6 +233,7 @@ class BrigadeAssistant {
     if (result && result.sent > 0) {
       try {
         await this.loadAttendance(this.inputDate);
+        await this.loadAllocations(this.inputDate);
         await this.loadTodayEntries(this.inputDate);
         this.renderInput();
       } catch (e) { console.warn('[offline] refresh after sync failed:', e); }
@@ -323,6 +327,17 @@ class BrigadeAssistant {
     }
   }
 
+  // Куски разбивки численности (вид работ + квартал) за день — грузим вместе с явкой.
+  async loadAllocations(date) {
+    try {
+      const r = await this.apiFetch('/api/people-allocations?date=' + encodeURIComponent(date));
+      const data = await r.json();
+      this.allocations = data.allocations || [];
+    } catch (e) {
+      this.allocations = [];
+    }
+  }
+
   async loadTodayEntries(date) {
     // В демо: плашка «Всего за день» показывает ВСЁ за день по хозяйству,
     // по всем культурам сразу — один рабочий может работать утром на яблоне,
@@ -364,6 +379,7 @@ class BrigadeAssistant {
     this.ctxCell = '';
     this.ctxCellMaxRow = null;  // clear cache when estate changes
     this.selectedEmployeeId = null;
+    await this.loadAllocations(this.inputDate);
     await this.loadTodayEntries(this.inputDate);
     this.renderInput();
   }
@@ -854,6 +870,7 @@ class BrigadeAssistant {
       <div class="ctx-block">
         <div class="block-label">Добавить запись</div>
         <div class="sel-emp">Сотрудник: <b>${selName ? this.escapeHtml(selName) : '— выбери плашку выше'}</b></div>
+        ${this.renderAllocationSection()}
         ${
           this.measureMode === 'hours'
             ? '<div class="form-group"><label>Часы:</label><input type="number" id="i2-hours" min="1" inputmode="numeric"></div>'
@@ -1772,6 +1789,7 @@ class BrigadeAssistant {
   async onInputDateChange() {
     this.inputDate = document.getElementById('i2-date').value || this.getTodayDate();
     await this.loadAttendance(this.inputDate);
+    await this.loadAllocations(this.inputDate);
     await this.loadTodayEntries(this.inputDate);
     this.renderInput();
   }
@@ -1913,6 +1931,7 @@ class BrigadeAssistant {
       if (this.selectedEmployeeId === id) this.selectedEmployeeId = null;
       await this.loadEmployees();
       await this.loadAttendance(this.inputDate);
+      await this.loadAllocations(this.inputDate);
       this.renderInput();
     } catch (e) {
       alert('Ошибка: ' + e.message);
@@ -1933,6 +1952,7 @@ class BrigadeAssistant {
         await this.markPresent(employeeId);
       }
       await this.loadAttendance(this.inputDate);
+      await this.loadAllocations(this.inputDate); // снятие с явки каскадно удаляет куски разбивки
       this.renderInput();
     } catch (e) {
       alert('Ошибка: ' + e.message);
@@ -1985,10 +2005,125 @@ class BrigadeAssistant {
       if (!r.ok) throw new Error(data.error || 'Не удалось сохранить к-во чел.');
       const row = this.present.find(p => p.employee_id === employeeId);
       if (row) row.people_count = people_count;
+      // Новое N могло сделать сумму кусков разбивки другой относительно потолка —
+      // перечитываем куски (сервер мог их каскадно почистить при сбросе N) и
+      // обновляем предупреждение «Разбивка X из N».
+      await this.loadAllocations(this.inputDate);
+      this.renderInput();
     } catch (e) {
       alert('Ошибка: ' + e.message);
       await this.loadAttendance(this.inputDate);
+      await this.loadAllocations(this.inputDate);
       this.renderInput();
+    }
+  }
+
+  // «Разбивка X из N» — предупреждение, пока сумма кусков меньше общего N.
+  // Клиентская копия formatAllocationProgress из server/peopleAllocations.js.
+  allocationProgress(sum, cap) {
+    if (!cap || sum === 0 || sum === cap) return null;
+    return `Разбивка ${sum} из ${cap}`;
+  }
+
+  // Блок «Чел. на этот вид / квартал» + список кусков выбранного сотрудника.
+  // Виден только когда есть выбранный (тапнутый) сотрудник из явки.
+  renderAllocationSection() {
+    if (this.selectedEmployeeId == null) return '';
+    const p = this.present.find(x => x.employee_id === this.selectedEmployeeId);
+    if (!p) return '';
+    const hasCtx = !!(this.ctxWorkType && this.ctxQuarter);
+    const N = (p.people_count != null && p.people_count !== '') ? Number(p.people_count) : null;
+    const rows = this.allocations.filter(a => a.employee_id === this.selectedEmployeeId);
+    const currentAlloc = hasCtx
+      ? rows.find(a => a.work_type === this.ctxWorkType && a.quarter === this.ctxQuarter)
+      : null;
+
+    let fieldHtml;
+    if (!hasCtx) {
+      fieldHtml = '<div class="rows-warn">Сначала вид работ и квартал</div>';
+    } else if (!N) {
+      fieldHtml = '<div class="rows-warn">Сначала общее к-во чел. на плашке</div>';
+    } else {
+      const currentVal = currentAlloc ? String(currentAlloc.people_count) : '';
+      fieldHtml = `
+        <div class="add-inline">
+          <input type="number" id="i2-alloc-count" min="1" max="999" inputmode="numeric" value="${this.escapeHtml(currentVal)}">
+          <button type="button" class="mini-btn" onclick="app.saveAllocation()">Сохранить чел.</button>
+          <button type="button" class="mini-btn" onclick="app.clearAllocation()" ${currentAlloc ? '' : 'disabled'}>✕</button>
+        </div>`;
+    }
+
+    const listHtml = rows.map(a => `
+        <div class="roster-row">
+          <span class="roster-name" style="cursor:default">${this.escapeHtml(a.work_type)} · ${this.escapeHtml(a.quarter)} — ${a.people_count}</span>
+          <span class="roster-del" onclick="app.deleteAllocationRow(${a.employee_id}, '${this.escapeAttr(a.work_type)}', '${this.escapeAttr(a.quarter)}')">✕</span>
+        </div>`).join('');
+
+    const sum = rows.reduce((s, a) => s + (Number(a.people_count) || 0), 0);
+    const warnMsg = N ? this.allocationProgress(sum, N) : null;
+
+    return `
+      <div class="form-group alloc-row">
+        <label>Чел. на этот вид / квартал:</label>
+        ${fieldHtml}
+      </div>
+      ${listHtml}
+      ${warnMsg ? `<div class="alloc-warn">⚠️ ${this.escapeHtml(warnMsg)}</div>` : ''}
+    `;
+  }
+
+  async saveAllocation() {
+    const msg = document.getElementById('i2-msg');
+    const setMsg = (t) => { if (msg) { msg.className = 'auth-msg'; msg.textContent = t; } };
+    if (this.selectedEmployeeId == null) { setMsg('❌ Выбери сотрудника (плашку выше)'); return; }
+    if (!this.ctxWorkType) { setMsg('❌ Выбери вид работ'); return; }
+    if (!this.ctxQuarter) { setMsg('❌ Выбери квартал'); return; }
+    const input = document.getElementById('i2-alloc-count');
+    const raw = input ? input.value : '';
+    try {
+      const r = await this.apiFetch('/api/people-allocations', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date: this.inputDate,
+          employee_id: this.selectedEmployeeId,
+          work_type: this.ctxWorkType,
+          quarter: this.ctxQuarter,
+          people_count: raw,
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { setMsg('❌ ' + (data.error || 'Ошибка')); return; }
+      setMsg('');
+      await this.loadAllocations(this.inputDate);
+      this.renderInput();
+    } catch (e) {
+      setMsg('❌ ' + e.message);
+    }
+  }
+
+  // Удаляет кусок разбивки для текущего контекста (вид+квартал выбранного сотрудника).
+  async clearAllocation() {
+    if (this.selectedEmployeeId == null || !this.ctxWorkType || !this.ctxQuarter) return;
+    await this.deleteAllocationRow(this.selectedEmployeeId, this.ctxWorkType, this.ctxQuarter);
+  }
+
+  // Удаляет конкретный кусок разбивки (используется и списком, и clearAllocation).
+  async deleteAllocationRow(employeeId, workType, quarter) {
+    const msg = document.getElementById('i2-msg');
+    const setMsg = (t) => { if (msg) { msg.className = 'auth-msg'; msg.textContent = t; } };
+    try {
+      const r = await this.apiFetch('/api/people-allocations', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: this.inputDate, employee_id: employeeId, work_type: workType, quarter: quarter }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { setMsg('❌ ' + (data.error || 'Ошибка')); return; }
+      await this.loadAllocations(this.inputDate);
+      this.renderInput();
+    } catch (e) {
+      setMsg('❌ ' + e.message);
     }
   }
 
