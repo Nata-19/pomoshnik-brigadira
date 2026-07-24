@@ -1739,6 +1739,67 @@ app.get('/api/rows-status', authOrDemo, async (req, res) => {
   }
 });
 
+// Обзор всех клеток квартала по виду работ (клетка в query не нужна).
+app.get('/api/rows-status/quarter', authOrDemo, async (req, res) => {
+  try {
+    const { estate, quarter } = req.query;
+    const work_type = String(req.query.work_type || '').trim();
+    if (!estate || quarter == null || quarter === '' || !work_type) {
+      return res.status(400).json({ error: 'Укажи хозяйство, квартал и вид работ' });
+    }
+
+    let parserToUse;
+    if (DEMO_MODE) parserToUse = new DataParser(await demo.getDemoInventory(pool, req.demo_session_id));
+    else parserToUse = parser;
+
+    const edata = parserToUse.inventory && parserToUse.inventory.estates
+      ? parserToUse.inventory.estates[estate]
+      : null;
+    if (!edata) {
+      return res.status(400).json({ error: `Хозяйство "${estate}" не найдено в инвентаризации` });
+    }
+    const qdata = edata.quarters[String(quarter)];
+    if (!qdata || !qdata.cells) {
+      return res.status(400).json({ error: `Квартал ${quarter} не найден в инвентаризации` });
+    }
+    const cellKeys = Object.keys(qdata.cells).sort((a, b) => {
+      const na = Number(a);
+      const nb = Number(b);
+      if (Number.isFinite(na) && Number.isFinite(nb) && String(na) === String(a) && String(nb) === String(b)) {
+        return na - nb;
+      }
+      return String(a).localeCompare(String(b), 'ru');
+    });
+
+    const owner = rowOwner(req);
+    const cells = [];
+    for (const cell of cellKeys) {
+      const result = await buildCellReconcile(req, estate, quarter, cell, work_type);
+      const closed = await isCellClosed(pool, owner, estate, quarter, cell, work_type);
+      const canClose = canCloseCell({ fullyDone: result.fullyDone, closed });
+      cells.push({
+        cell: String(cell),
+        ...result,
+        closed,
+        canClose,
+        statusLabel: closureStatusLabel({
+          closed,
+          fullyDone: result.fullyDone,
+          disputedCount: result.disputedCount,
+          missedRowsLength: (result.missedRows || []).length,
+        }),
+      });
+    }
+    res.json({ cells });
+  } catch (error) {
+    if (error.statusCode === 400) {
+      return res.status(400).json({ error: error.message });
+    }
+    console.error('Quarter rows status error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/cell-closures', authOrDemo, async (req, res) => {
   try {
     const estate = req.body && req.body.estate;
