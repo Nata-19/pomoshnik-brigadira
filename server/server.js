@@ -14,6 +14,7 @@ const auth = require('./auth');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { normalizePeopleCount } = require('./peopleCount');
+const { canCloseCell, closureStatusLabel } = require('./cellClosure');
 
 const app = express();
 app.set('trust proxy', 1); // за HTTPS-прокси Render
@@ -182,6 +183,29 @@ const getSecret = () => SESSION_SECRET;
         created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    // Метки «клетка закрыта по виду работ» (Сверка). FK на demo_sessions — только в демо-блоке.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cell_closures (
+        id SERIAL PRIMARY KEY,
+        estate_id TEXT NOT NULL,
+        quarter TEXT NOT NULL,
+        cell TEXT NOT NULL,
+        work_type TEXT NOT NULL,
+        brigadier_id INTEGER,
+        demo_session_id TEXT,
+        closed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS cell_closures_prod_uniq
+      ON cell_closures (brigadier_id, estate_id, quarter, cell, work_type)
+      WHERE demo_session_id IS NULL
+    `);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS cell_closures_demo_uniq
+      ON cell_closures (demo_session_id, estate_id, quarter, cell, work_type)
+      WHERE demo_session_id IS NOT NULL
+    `);
     // Заполняем общий список видов работ основными — один раз, если он пуст.
     const wtCount = await pool.query('SELECT COUNT(*)::int AS n FROM work_types');
     if (wtCount.rows[0].n === 0) {
@@ -232,6 +256,11 @@ const getSecret = () => SESSION_SECRET;
         IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'disputed_rows_demo_session_fk') THEN
           ALTER TABLE disputed_rows
             ADD CONSTRAINT disputed_rows_demo_session_fk
+            FOREIGN KEY (demo_session_id) REFERENCES demo_sessions(id) ON DELETE CASCADE;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cell_closures_demo_session_fk') THEN
+          ALTER TABLE cell_closures
+            ADD CONSTRAINT cell_closures_demo_session_fk
             FOREIGN KEY (demo_session_id) REFERENCES demo_sessions(id) ON DELETE CASCADE;
         END IF;
       END $$;
@@ -1095,6 +1124,63 @@ function rowOwner(req) {
     : { col: 'brigadier_id', val: req.brigadier.id };
 }
 
+async function isCellClosed(db, owner, estate, quarter, cell, workType) {
+  const r = await db.query(
+    `SELECT 1 FROM cell_closures
+     WHERE estate_id = $1 AND quarter = $2 AND cell = $3 AND work_type = $4 AND ${owner.col} = $5
+     LIMIT 1`,
+    [estate, String(quarter), String(cell), workType, owner.val]
+  );
+  return r.rowCount > 0;
+}
+
+// Сверка одной клетки (инвентарь + журнал + спорные). Бросает Error с statusCode 400 при плохих аргументах.
+async function buildCellReconcile(req, estate, quarter, cell, workType) {
+  let parserToUse;
+  if (DEMO_MODE) parserToUse = new DataParser(await demo.getDemoInventory(pool, req.demo_session_id));
+  else parserToUse = parser;
+
+  let inventoryRows;
+  try {
+    inventoryRows = parserToUse.getCellRows(estate, String(quarter), String(cell));
+  } catch (e) {
+    const err = new Error(e.message);
+    err.statusCode = 400;
+    throw err;
+  }
+  if (inventoryRows.length === 0) {
+    const err = new Error('Нет данных по клетке');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const owner = rowOwner(req);
+  const logs = await pool.query(
+    `SELECT rows, row_weights FROM work_logs
+     WHERE estate_id = $1 AND quarter = $2 AND cell = $3 AND work_type = $4
+       AND measure_mode IN ('rows_bushes','rows_only')
+       AND rows IS NOT NULL AND rows <> '' AND ${owner.col} = $5`,
+    [estate, String(quarter), String(cell), workType, owner.val]
+  );
+  const weightByRow = {};
+  for (const r of logs.rows) {
+    const nums = String(r.rows || '').split(',').map((s) => parseInt(s, 10)).filter(Number.isInteger);
+    const w = rowControl.parseRowWeights(r.row_weights);
+    for (const n of nums) {
+      const wv = (typeof w[n] === 'number' && isFinite(w[n])) ? w[n] : 1;
+      weightByRow[n] = (weightByRow[n] || 0) + wv;
+    }
+  }
+
+  const disp = await pool.query(
+    `SELECT row_num FROM disputed_rows
+     WHERE estate_id = $1 AND quarter = $2 AND cell = $3 AND work_type = $4 AND ${owner.col} = $5`,
+    [estate, String(quarter), String(cell), workType, owner.val]
+  );
+  const disputedSet = new Set(disp.rows.map((d) => Number(d.row_num)));
+  return rowControl.computeCellReconciliation(inventoryRows, weightByRow, disputedSet);
+}
+
 // Снимает ряд rowNum из записи logId (того же владельца) и пишет результат в БД:
 // если рядов не осталось — удаляет запись, иначе обновляет rows + bushes.
 // removedRowBushes — кусты ряда по инвентаризации (rows_only → 0). Возвращает true,
@@ -1627,64 +1713,90 @@ app.get('/api/disputed', authOrDemo, async (req, res) => {
   }
 });
 
-// Сверка по клетке (Фаза 3): сделано/осталось + список несделанных рядов.
+// Сверка по клетке (Фаза 3): сделано/осталось + список несделанных рядов + метка закрытия.
 // Только просмотр. Разрез: estate+quarter+cell+work_type, накопительно.
 app.get('/api/rows-status', authOrDemo, async (req, res) => {
   try {
     const { estate, quarter, cell } = req.query;
-    // work_type в work_logs/disputed_rows хранится обрезанным (.trim()) — сравниваем так же.
     const work_type = String(req.query.work_type || '').trim();
-    // Проверяем null/'' (а не !quarter), т.к. 0 — допустимый номер квартала/клетки.
     if (!estate || quarter == null || quarter === '' || cell == null || cell === '' || !work_type) {
       return res.status(400).json({ error: 'Укажи хозяйство, квартал, клетку и вид работ' });
     }
-
-    let parserToUse;
-    if (DEMO_MODE) parserToUse = new DataParser(await demo.getDemoInventory(pool, req.demo_session_id));
-    else parserToUse = parser;
-
-    let inventoryRows;
-    try {
-      inventoryRows = parserToUse.getCellRows(estate, String(quarter), String(cell));
-    } catch (e) {
-      return res.status(400).json({ error: e.message });
-    }
-    if (inventoryRows.length === 0) {
-      return res.status(400).json({ error: 'Нет данных по клетке' });
-    }
-
     const owner = rowOwner(req);
-
-    // Журнал в разрезе: только рядовые режимы, непустые ряды.
-    const logs = await pool.query(
-      `SELECT rows, row_weights FROM work_logs
-       WHERE estate_id = $1 AND quarter = $2 AND cell = $3 AND work_type = $4
-         AND measure_mode IN ('rows_bushes','rows_only')
-         AND rows IS NOT NULL AND rows <> '' AND ${owner.col} = $5`,
-      [estate, String(quarter), String(cell), work_type, owner.val]
-    );
-    const weightByRow = {};
-    for (const r of logs.rows) {
-      const nums = String(r.rows || '').split(',').map((s) => parseInt(s, 10)).filter(Number.isInteger);
-      const w = rowControl.parseRowWeights(r.row_weights);
-      for (const n of nums) {
-        const wv = (typeof w[n] === 'number' && isFinite(w[n])) ? w[n] : 1;
-        weightByRow[n] = (weightByRow[n] || 0) + wv;
-      }
+    const result = await buildCellReconcile(req, estate, quarter, cell, work_type);
+    const closed = await isCellClosed(pool, owner, estate, quarter, cell, work_type);
+    res.json({
+      ...result,
+      closed,
+      canClose: canCloseCell({ fullyDone: result.fullyDone, closed }),
+    });
+  } catch (error) {
+    if (error.statusCode === 400) {
+      return res.status(400).json({ error: error.message });
     }
+    console.error('Rows status error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
-    // Спорные ряды того же разреза.
-    const disp = await pool.query(
-      `SELECT row_num FROM disputed_rows
+app.post('/api/cell-closures', authOrDemo, async (req, res) => {
+  try {
+    const estate = req.body && req.body.estate;
+    const quarter = req.body && req.body.quarter;
+    const cell = req.body && req.body.cell;
+    const work_type = String((req.body && req.body.work_type) || '').trim();
+    if (!estate || quarter == null || quarter === '' || cell == null || cell === '' || !work_type) {
+      return res.status(400).json({ error: 'Укажи хозяйство, квартал, клетку и вид работ' });
+    }
+    const result = await buildCellReconcile(req, estate, quarter, cell, work_type);
+    if (!result.fullyDone) {
+      return res.status(400).json({ error: 'Нельзя закрыть: есть пропуски или спорные' });
+    }
+    const owner = rowOwner(req);
+    if (await isCellClosed(pool, owner, estate, quarter, cell, work_type)) {
+      return res.json({ success: true, closed: true });
+    }
+    if (DEMO_MODE) {
+      await pool.query(
+        `INSERT INTO cell_closures (estate_id, quarter, cell, work_type, brigadier_id, demo_session_id)
+         VALUES ($1, $2, $3, $4, 0, $5)`,
+        [estate, String(quarter), String(cell), work_type, req.demo_session_id]
+      );
+    } else {
+      await pool.query(
+        `INSERT INTO cell_closures (estate_id, quarter, cell, work_type, brigadier_id, demo_session_id)
+         VALUES ($1, $2, $3, $4, $5, NULL)`,
+        [estate, String(quarter), String(cell), work_type, req.brigadier.id]
+      );
+    }
+    res.json({ success: true, closed: true });
+  } catch (error) {
+    if (error.statusCode === 400) {
+      return res.status(400).json({ error: error.message });
+    }
+    console.error('Cell close error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/cell-closures', authOrDemo, async (req, res) => {
+  try {
+    const estate = req.body && req.body.estate;
+    const quarter = req.body && req.body.quarter;
+    const cell = req.body && req.body.cell;
+    const work_type = String((req.body && req.body.work_type) || '').trim();
+    if (!estate || quarter == null || quarter === '' || cell == null || cell === '' || !work_type) {
+      return res.status(400).json({ error: 'Укажи хозяйство, квартал, клетку и вид работ' });
+    }
+    const owner = rowOwner(req);
+    await pool.query(
+      `DELETE FROM cell_closures
        WHERE estate_id = $1 AND quarter = $2 AND cell = $3 AND work_type = $4 AND ${owner.col} = $5`,
       [estate, String(quarter), String(cell), work_type, owner.val]
     );
-    const disputedSet = new Set(disp.rows.map((d) => Number(d.row_num)));
-
-    const result = rowControl.computeCellReconciliation(inventoryRows, weightByRow, disputedSet);
-    res.json(result);
+    res.json({ success: true, closed: false });
   } catch (error) {
-    console.error('Rows status error:', error);
+    console.error('Cell open error:', error);
     res.status(500).json({ error: error.message });
   }
 });
