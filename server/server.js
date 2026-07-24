@@ -15,6 +15,11 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { normalizePeopleCount } = require('./peopleCount');
 const { canCloseCell, closureStatusLabel } = require('./cellClosure');
+const {
+  normalizeAllocationCount,
+  sumAllocationCounts,
+  assertSumWithinCap,
+} = require('./peopleAllocations');
 
 const app = express();
 app.set('trust proxy', 1); // за HTTPS-прокси Render
@@ -206,6 +211,29 @@ const getSecret = () => SESSION_SECRET;
       ON cell_closures (demo_session_id, estate_id, quarter, cell, work_type)
       WHERE demo_session_id IS NOT NULL
     `);
+    // Разбивка явки по видам работ и участкам (Распределение людей). FK на demo_sessions — в демо-блоке.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS people_allocations (
+        id SERIAL PRIMARY KEY,
+        date TEXT NOT NULL,
+        employee_id INTEGER NOT NULL,
+        work_type TEXT NOT NULL,
+        quarter TEXT NOT NULL,
+        people_count INTEGER NOT NULL,
+        brigadier_id INTEGER,
+        demo_session_id TEXT
+      )
+    `);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS people_allocations_prod_uniq
+      ON people_allocations (brigadier_id, date, employee_id, work_type, quarter)
+      WHERE demo_session_id IS NULL
+    `);
+    await pool.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS people_allocations_demo_uniq
+      ON people_allocations (demo_session_id, date, employee_id, work_type, quarter)
+      WHERE demo_session_id IS NOT NULL
+    `);
     // Заполняем общий список видов работ основными — один раз, если он пуст.
     const wtCount = await pool.query('SELECT COUNT(*)::int AS n FROM work_types');
     if (wtCount.rows[0].n === 0) {
@@ -261,6 +289,11 @@ const getSecret = () => SESSION_SECRET;
         IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cell_closures_demo_session_fk') THEN
           ALTER TABLE cell_closures
             ADD CONSTRAINT cell_closures_demo_session_fk
+            FOREIGN KEY (demo_session_id) REFERENCES demo_sessions(id) ON DELETE CASCADE;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'people_allocations_demo_session_fk') THEN
+          ALTER TABLE people_allocations
+            ADD CONSTRAINT people_allocations_demo_session_fk
             FOREIGN KEY (demo_session_id) REFERENCES demo_sessions(id) ON DELETE CASCADE;
         END IF;
       END $$;
@@ -1089,6 +1122,169 @@ app.patch('/api/attendance', authOrDemo, async (req, res) => {
       return res.status(404).json({ error: 'Сначала отметьте сотрудника в явке' });
     }
     res.json({ success: true, people_count: peopleCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Распределение людей по видам работ (разбивка явки одного сотрудника) ---
+app.get('/api/people-allocations', authOrDemo, async (req, res) => {
+  try {
+    const date = req.query.date;
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
+    }
+    let r;
+    if (DEMO_MODE) {
+      r = await pool.query(
+        `SELECT employee_id, work_type, quarter, people_count
+         FROM people_allocations
+         WHERE demo_session_id = $1 AND date = $2
+         ORDER BY work_type, quarter`,
+        [req.demo_session_id, date]
+      );
+    } else {
+      r = await pool.query(
+        `SELECT employee_id, work_type, quarter, people_count
+         FROM people_allocations
+         WHERE brigadier_id = $1 AND date = $2
+         ORDER BY work_type, quarter`,
+        [req.brigadier.id, date]
+      );
+    }
+    res.json({ allocations: r.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/people-allocations', authOrDemo, async (req, res) => {
+  try {
+    const { date, employee_id, work_type, quarter, people_count: rawCount } = req.body || {};
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
+    }
+    const eid = parseInt(employee_id, 10);
+    if (!Number.isInteger(eid)) {
+      return res.status(400).json({ error: 'Неверный id сотрудника' });
+    }
+    const workType = typeof work_type === 'string' ? work_type.trim() : '';
+    if (!workType) {
+      return res.status(400).json({ error: 'Не указан вид работ' });
+    }
+    const quarterVal = typeof quarter === 'string' ? quarter.trim() : '';
+    if (!quarterVal) {
+      return res.status(400).json({ error: 'Не указан участок' });
+    }
+    let count;
+    try {
+      count = normalizeAllocationCount(rawCount);
+    } catch (e) {
+      return res.status(e.statusCode || 400).json({ error: e.message });
+    }
+
+    const ownerCol = DEMO_MODE ? 'demo_session_id' : 'brigadier_id';
+    const ownerVal = DEMO_MODE ? req.demo_session_id : req.brigadier.id;
+
+    // Явка сотрудника на дату — источник N (сколько человек можно распределить).
+    const attRes = await pool.query(
+      `SELECT people_count FROM attendance WHERE ${ownerCol} = $1 AND date = $2 AND employee_id = $3`,
+      [ownerVal, date, eid]
+    );
+    if (attRes.rowCount === 0) {
+      return res.status(404).json({ error: 'Сначала отметьте сотрудника в явке' });
+    }
+    const attendanceN = attRes.rows[0].people_count;
+    if (attendanceN === null || attendanceN === undefined) {
+      return res.status(400).json({ error: 'Сначала укажите общее к-во чел. в явке' });
+    }
+
+    try {
+      await withTransaction(pool, async (client) => {
+        if (DEMO_MODE) {
+          const updated = await client.query(
+            `UPDATE people_allocations SET people_count = $1
+             WHERE demo_session_id = $2 AND date = $3 AND employee_id = $4
+               AND work_type = $5 AND quarter = $6`,
+            [count, req.demo_session_id, date, eid, workType, quarterVal]
+          );
+          if (updated.rowCount === 0) {
+            await client.query(
+              `INSERT INTO people_allocations
+                (date, employee_id, work_type, quarter, people_count, brigadier_id, demo_session_id)
+               VALUES ($1,$2,$3,$4,$5,0,$6)`,
+              [date, eid, workType, quarterVal, count, req.demo_session_id]
+            );
+          }
+        } else {
+          const updated = await client.query(
+            `UPDATE people_allocations SET people_count = $1
+             WHERE brigadier_id = $2 AND date = $3 AND employee_id = $4
+               AND work_type = $5 AND quarter = $6`,
+            [count, req.brigadier.id, date, eid, workType, quarterVal]
+          );
+          if (updated.rowCount === 0) {
+            await client.query(
+              `INSERT INTO people_allocations
+                (date, employee_id, work_type, quarter, people_count, brigadier_id, demo_session_id)
+               VALUES ($1,$2,$3,$4,$5,$6,NULL)`,
+              [date, eid, workType, quarterVal, count, req.brigadier.id]
+            );
+          }
+        }
+
+        const sumRes = await client.query(
+          `SELECT people_count FROM people_allocations
+           WHERE ${ownerCol} = $1 AND date = $2 AND employee_id = $3`,
+          [ownerVal, date, eid]
+        );
+        const sum = sumAllocationCounts(sumRes.rows);
+        assertSumWithinCap(sum, attendanceN);
+      });
+    } catch (e) {
+      return res.status(e.statusCode || 500).json({ error: e.message });
+    }
+
+    res.json({ success: true, people_count: count });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/people-allocations', authOrDemo, async (req, res) => {
+  try {
+    const { date, employee_id, work_type, quarter } = req.body || {};
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
+    }
+    const eid = parseInt(employee_id, 10);
+    if (!Number.isInteger(eid)) {
+      return res.status(400).json({ error: 'Неверный id сотрудника' });
+    }
+    const workType = typeof work_type === 'string' ? work_type.trim() : '';
+    if (!workType) {
+      return res.status(400).json({ error: 'Не указан вид работ' });
+    }
+    const quarterVal = typeof quarter === 'string' ? quarter.trim() : '';
+    if (!quarterVal) {
+      return res.status(400).json({ error: 'Не указан участок' });
+    }
+    if (DEMO_MODE) {
+      await pool.query(
+        `DELETE FROM people_allocations
+         WHERE demo_session_id = $1 AND date = $2 AND employee_id = $3
+           AND work_type = $4 AND quarter = $5`,
+        [req.demo_session_id, date, eid, workType, quarterVal]
+      );
+    } else {
+      await pool.query(
+        `DELETE FROM people_allocations
+         WHERE brigadier_id = $1 AND date = $2 AND employee_id = $3
+           AND work_type = $4 AND quarter = $5`,
+        [req.brigadier.id, date, eid, workType, quarterVal]
+      );
+    }
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
