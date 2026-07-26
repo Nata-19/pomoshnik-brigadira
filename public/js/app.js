@@ -904,15 +904,28 @@ class BrigadeAssistant {
     return p ? p.name : '';
   }
 
-  peopleCountForName(name) {
-    const p = (this.present || []).find(x => x.name === name);
-    if (!p || p.people_count == null || p.people_count === '') return null;
-    const n = Number(p.people_count);
+  peopleCountForName(name, { work_type, quarter } = {}) {
+    // Клиентская копия resolvePeopleCountForLine (server/peopleAllocations.js).
+    const presentRow = (this.present || []).find(x => x.name === name);
+    if (!presentRow) return null;
+    const wt = typeof work_type === 'string' ? work_type.trim() : '';
+    const q = (quarter == null ? '' : String(quarter)).trim();
+    const piece = (this.allocations || []).find(
+      a => a.employee_id === presentRow.employee_id
+        && a.work_type === wt
+        && String(a.quarter || '').trim() === q
+    );
+    if (piece) {
+      const n = Number(piece.people_count);
+      return Number.isInteger(n) && n >= 1 ? n : null;
+    }
+    if (presentRow.people_count == null || presentRow.people_count === '') return null;
+    const n = Number(presentRow.people_count);
     return Number.isInteger(n) && n >= 1 ? n : null;
   }
 
-  formatEmployeeLabel(name) {
-    const n = this.peopleCountForName(name);
+  formatEmployeeLabel(name, ctx = {}) {
+    const n = this.peopleCountForName(name, ctx);
     if (n != null) return `${name} ${n} чел.`;
     return name || '—';
   }
@@ -1494,7 +1507,7 @@ class BrigadeAssistant {
           measure = `${this.fmtRows(r.rowCount)} рядов`;
         }
         const empLabel = withPeopleCount
-          ? this.formatEmployeeLabel(r.employee)
+          ? this.formatEmployeeLabel(r.employee, { work_type: g.work_type, quarter: r.quarter })
           : (r.employee || '—');
         return `<div class="report-line">${this.escapeHtml(empLabel)} — ${measure}${place}</div>`;
       }).join('');
@@ -1596,7 +1609,7 @@ class BrigadeAssistant {
           measure = `${rowsRange}${r.hectares} га`;
         }
         const empLabel = withPeopleCount
-          ? this.formatEmployeeLabel(r.employee)
+          ? this.formatEmployeeLabel(r.employee, { work_type: g.work_type, quarter: r.quarter })
           : (r.employee || '—');
         return `<div class="report-line">${this.escapeHtml(empLabel)} — ${measure}${place}</div>`;
       }).join('');
@@ -2027,20 +2040,22 @@ class BrigadeAssistant {
 
   // Блок «Чел. на этот вид / квартал» + список кусков выбранного сотрудника.
   // Виден только когда есть выбранный (тапнутый) сотрудник из явки.
+  // Квартал необязателен: пустой = «без квартала» (хозработы/часы).
   renderAllocationSection() {
     if (this.selectedEmployeeId == null) return '';
     const p = this.present.find(x => x.employee_id === this.selectedEmployeeId);
     if (!p) return '';
-    const hasCtx = !!(this.ctxWorkType && this.ctxQuarter);
+    const hasCtx = !!this.ctxWorkType;
     const N = (p.people_count != null && p.people_count !== '') ? Number(p.people_count) : null;
     const rows = this.allocations.filter(a => a.employee_id === this.selectedEmployeeId);
+    const ctxQuarter = (this.ctxQuarter || '').trim();
     const currentAlloc = hasCtx
-      ? rows.find(a => a.work_type === this.ctxWorkType && a.quarter === this.ctxQuarter)
+      ? rows.find(a => a.work_type === this.ctxWorkType && String(a.quarter || '').trim() === ctxQuarter)
       : null;
 
     let fieldHtml;
     if (!hasCtx) {
-      fieldHtml = '<div class="rows-warn">Сначала вид работ и квартал</div>';
+      fieldHtml = '<div class="rows-warn">Сначала вид работ (квартал — по желанию)</div>';
     } else if (!N) {
       fieldHtml = '<div class="rows-warn">Сначала общее к-во чел. на плашке</div>';
     } else {
@@ -2053,11 +2068,14 @@ class BrigadeAssistant {
         </div>`;
     }
 
-    const listHtml = rows.map(a => `
+    const listHtml = rows.map(a => {
+      const qLabel = String(a.quarter || '').trim() || 'без квартала';
+      return `
         <div class="roster-row">
-          <span class="roster-name" style="cursor:default">${this.escapeHtml(a.work_type)} · ${this.escapeHtml(a.quarter)} — ${a.people_count}</span>
-          <span class="roster-del" onclick="app.deleteAllocationRow(${a.employee_id}, '${this.escapeAttr(a.work_type)}', '${this.escapeAttr(a.quarter)}')">✕</span>
-        </div>`).join('');
+          <span class="roster-name" style="cursor:default">${this.escapeHtml(a.work_type)} · ${this.escapeHtml(qLabel)} — ${a.people_count}</span>
+          <span class="roster-del" onclick="app.deleteAllocationRow(${a.employee_id}, '${this.escapeAttr(a.work_type)}', '${this.escapeAttr(a.quarter || '')}')">✕</span>
+        </div>`;
+    }).join('');
 
     const sum = rows.reduce((s, a) => s + (Number(a.people_count) || 0), 0);
     const warnMsg = N ? this.allocationProgress(sum, N) : null;
@@ -2077,7 +2095,6 @@ class BrigadeAssistant {
     const setMsg = (t) => { if (msg) { msg.className = 'auth-msg'; msg.textContent = t; } };
     if (this.selectedEmployeeId == null) { setMsg('❌ Выбери сотрудника (плашку выше)'); return; }
     if (!this.ctxWorkType) { setMsg('❌ Выбери вид работ'); return; }
-    if (!this.ctxQuarter) { setMsg('❌ Выбери квартал'); return; }
     const input = document.getElementById('i2-alloc-count');
     const raw = input ? input.value : '';
     try {
@@ -2088,7 +2105,7 @@ class BrigadeAssistant {
           date: this.inputDate,
           employee_id: this.selectedEmployeeId,
           work_type: this.ctxWorkType,
-          quarter: this.ctxQuarter,
+          quarter: (this.ctxQuarter || '').trim(),
           people_count: raw,
         }),
       });
@@ -2104,8 +2121,8 @@ class BrigadeAssistant {
 
   // Удаляет кусок разбивки для текущего контекста (вид+квартал выбранного сотрудника).
   async clearAllocation() {
-    if (this.selectedEmployeeId == null || !this.ctxWorkType || !this.ctxQuarter) return;
-    await this.deleteAllocationRow(this.selectedEmployeeId, this.ctxWorkType, this.ctxQuarter);
+    if (this.selectedEmployeeId == null || !this.ctxWorkType) return;
+    await this.deleteAllocationRow(this.selectedEmployeeId, this.ctxWorkType, (this.ctxQuarter || '').trim());
   }
 
   // Удаляет конкретный кусок разбивки (используется и списком, и clearAllocation).

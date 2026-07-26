@@ -19,6 +19,7 @@ const {
   normalizeAllocationCount,
   sumAllocationCounts,
   assertSumWithinCap,
+  normalizeAllocationQuarter,
 } = require('./peopleAllocations');
 
 const app = express();
@@ -1199,10 +1200,9 @@ app.put('/api/people-allocations', authOrDemo, async (req, res) => {
     if (!workType) {
       return res.status(400).json({ error: 'Не указан вид работ' });
     }
-    const quarterVal = typeof quarter === 'string' ? quarter.trim() : '';
-    if (!quarterVal) {
-      return res.status(400).json({ error: 'Не указан участок' });
-    }
+    const quarterVal = normalizeAllocationQuarter(
+      typeof quarter === 'string' ? quarter : quarter == null ? '' : String(quarter)
+    );
     let count;
     try {
       count = normalizeAllocationCount(rawCount);
@@ -1292,10 +1292,9 @@ app.delete('/api/people-allocations', authOrDemo, async (req, res) => {
     if (!workType) {
       return res.status(400).json({ error: 'Не указан вид работ' });
     }
-    const quarterVal = typeof quarter === 'string' ? quarter.trim() : '';
-    if (!quarterVal) {
-      return res.status(400).json({ error: 'Не указан участок' });
-    }
+    const quarterVal = normalizeAllocationQuarter(
+      typeof quarter === 'string' ? quarter : quarter == null ? '' : String(quarter)
+    );
     if (DEMO_MODE) {
       await pool.query(
         `DELETE FROM people_allocations
