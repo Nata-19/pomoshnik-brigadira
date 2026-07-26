@@ -2816,7 +2816,12 @@ class BrigadeAssistant {
 
   async _copyText(text) {
     const msg = document.getElementById('perf-copy-msg');
-    const show = (t) => { if (msg) { msg.className = 'auth-msg'; msg.textContent = t; } };
+    const show = (t, ok) => {
+      if (msg) {
+        msg.className = ok ? 'auth-msg auth-ok' : 'auth-msg';
+        msg.textContent = t;
+      }
+    };
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(text);
@@ -2830,10 +2835,10 @@ class BrigadeAssistant {
         document.execCommand('copy');
         ta.remove();
       }
-      show('✓ Скопировано — вставь в группу MAX');
+      show('✓ Скопировано — вставь в группу MAX', true);
       setTimeout(() => { if (msg && msg.textContent.startsWith('✓')) msg.textContent = ''; }, 2500);
     } catch (e) {
-      show('❌ Не удалось скопировать: ' + (e.message || e));
+      show('❌ Не удалось скопировать: ' + (e.message || e), false);
     }
   }
 
@@ -2872,10 +2877,16 @@ class BrigadeAssistant {
   }
 
   async copyAccountingExport(msgId) {
-    const show = (t) => { const el = document.getElementById(msgId); if (el) { el.className = 'auth-msg'; el.textContent = t; } };
+    const show = (t, ok) => {
+      const el = document.getElementById(msgId);
+      if (el) {
+        el.className = ok ? 'auth-msg auth-ok' : 'auth-msg';
+        el.textContent = t;
+      }
+    };
     try {
       const data = await this.fetchAccountingExport(msgId);
-      if (!data.rowCount) { show('Нет ручных работ за этот период'); return; }
+      if (!data.rowCount) { show('Нет ручных работ за этот период', false); return; }
       if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(data.text);
       } else {
@@ -2888,18 +2899,24 @@ class BrigadeAssistant {
         document.execCommand('copy');
         ta.remove();
       }
-      show('✓ Скопировано — вставь в Excel');
+      show('✓ Скопировано — вставь в Excel', true);
       setTimeout(() => { const el = document.getElementById(msgId); if (el && el.textContent.startsWith('✓')) el.textContent = ''; }, 2500);
     } catch (e) {
-      show('❌ ' + (e.message || e));
+      show('❌ ' + (e.message || e), false);
     }
   }
 
   async shareAccountingExport(msgId) {
-    const show = (t) => { const el = document.getElementById(msgId); if (el) { el.className = 'auth-msg'; el.textContent = t; } };
+    const show = (t, ok) => {
+      const el = document.getElementById(msgId);
+      if (el) {
+        el.className = ok ? 'auth-msg auth-ok' : 'auth-msg';
+        el.textContent = t;
+      }
+    };
     try {
       const data = await this.fetchAccountingExport(msgId);
-      if (!data.rowCount) { show('Нет ручных работ за этот период'); return; }
+      if (!data.rowCount) { show('Нет ручных работ за этот период', false); return; }
       if (typeof navigator.share === 'function') {
         await navigator.share({ text: data.text, title: 'Для бухгалтера' });
       } else {
@@ -2907,7 +2924,7 @@ class BrigadeAssistant {
       }
     } catch (e) {
       if (e && e.name === 'AbortError') return; // пользователь закрыл диалог «Поделиться»
-      show('❌ ' + (e.message || e));
+      show('❌ ' + (e.message || e), false);
     }
   }
 

@@ -1,5 +1,6 @@
 'use strict';
 const { resolvePeopleCountForLine, normalizeAllocationQuarter } = require('./peopleAllocations');
+const rowControl = require('./rowControl');
 
 const ACCOUNTING_HEADERS = [
   'Технологическая операция, Условное обозначение',
@@ -26,7 +27,6 @@ function formatAccountingDate(iso) {
 }
 
 function rowWeightSum(log) {
-  const rowControl = require('./rowControl');
   return rowControl.weightOfRecord(log.rows, log.row_weights);
 }
 
@@ -34,7 +34,8 @@ function factForLine(line) {
   if (line.measure_mode === 'hours') return Number(line.hours) || 0;
   if (line.measure_mode === 'rows_bushes') return Number(line.bushes) || 0;
   const n = Number(line.rowCount);
-  return Number.isFinite(n) ? n : '';
+  if (!Number.isFinite(n)) return '';
+  return Math.round(n * 100) / 100;
 }
 
 function aggregateManualLines(logs, mechanizedNames) {

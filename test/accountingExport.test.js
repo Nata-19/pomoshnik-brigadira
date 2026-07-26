@@ -17,6 +17,8 @@ test('factForLine: кусты / часы / ряды', () => {
   assert.equal(factForLine({ measure_mode: 'rows_bushes', bushes: 1452, rowCount: 7 }), 1452);
   assert.equal(factForLine({ measure_mode: 'hours', hours: 6 }), 6);
   assert.equal(factForLine({ measure_mode: 'rows_only', rowCount: 3.5 }), 3.5);
+  assert.equal(factForLine({ measure_mode: 'rows_only', rowCount: 1 / 3 }), 0.33);
+  assert.equal(factForLine({ measure_mode: 'rows_only', rowCount: 0.999999 }), 1);
 });
 
 test('aggregateManualLines: без механизированных; ключ с датой', () => {
