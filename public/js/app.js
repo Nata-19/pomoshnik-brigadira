@@ -1743,10 +1743,15 @@ class BrigadeAssistant {
       const deleteBtn = log._pending
         ? `<button class="delete-btn" onclick="app.cancelPendingEntry('${log.client_uuid}')">Убрать</button>`
         : `<button class="delete-btn" onclick="app.deleteEntry(${log.id})">Удалить</button>`;
+      // К-во чел. как в «Всего за день»: кусок разбивки (вид+квартал), иначе N явки.
+      const empLabel = this.formatEmployeeLabel(log.employee, {
+        work_type: log.work_type,
+        quarter: log.quarter,
+      });
       return `
         <div class="${cardClass}">
           <div class="log-info">
-            <div class="log-employee">${pendingBadge}${this.escapeHtml(log.employee)}</div>
+            <div class="log-employee">${pendingBadge}${this.escapeHtml(empLabel)}</div>
             <div class="log-meta">${this.escapeHtml(log.work_type || '')}${culture}${place}</div>
             <div class="log-meta">${measure}</div>
           </div>
