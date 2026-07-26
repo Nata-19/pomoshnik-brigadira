@@ -15,6 +15,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { normalizePeopleCount } = require('./peopleCount');
 const { canCloseCell, closureStatusLabel } = require('./cellClosure');
+const { buildAccountingTsv } = require('./accountingExport');
 const {
   normalizeAllocationCount,
   sumAllocationCounts,
@@ -2426,6 +2427,112 @@ app.get('/api/report', authOrDemo, async (req, res) => {
     res.json({ report });
   } catch (error) {
     console.error('Report error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Выгрузка ручных работ для бухгалтера: TSV по фамилиям, за день или за период.
+app.get('/api/accounting/export', authOrDemo, async (req, res) => {
+  try {
+    const { date, from, to, estate } = req.query;
+    // В демо estate опционален (как /api/logs); в проде бригадир обязан его выбрать.
+    if (!DEMO_MODE && !estate) {
+      return res.status(400).json({ error: 'Укажи estate' });
+    }
+
+    const ownerCol = DEMO_MODE ? 'demo_session_id' : 'brigadier_id';
+    const ownerVal = DEMO_MODE ? req.demo_session_id : req.brigadier.id;
+
+    const logsParams = [ownerVal];
+    let logsDateWhere;
+    if (date) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return res.status(400).json({ error: 'Дата в формате YYYY-MM-DD' });
+      }
+      logsParams.push(date);
+      logsDateWhere = `date = $${logsParams.length}`;
+    } else if (from && to) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+        return res.status(400).json({ error: 'Даты в формате YYYY-MM-DD' });
+      }
+      if (from > to) {
+        return res.status(400).json({ error: 'Дата "От" позже даты "До"' });
+      }
+      logsParams.push(from, to);
+      logsDateWhere = `date >= $${logsParams.length - 1} AND date <= $${logsParams.length}`;
+    } else {
+      return res.status(400).json({ error: 'Укажи date или from+to' });
+    }
+
+    let estateWhere = '';
+    if (estate) {
+      logsParams.push(estate);
+      estateWhere = ` AND estate_id = $${logsParams.length}`;
+    }
+
+    const logsResult = await pool.query(
+      `SELECT date, estate_id, quarter, cell, employee, rows, row_weights, bushes, work_type, measure_mode, hours, hectares
+       FROM work_logs
+       WHERE ${ownerCol} = $1 AND ${logsDateWhere}${estateWhere}
+       ORDER BY employee, work_type, date`,
+      logsParams
+    );
+
+    const mechResult = DEMO_MODE
+      ? await pool.query(
+          `SELECT name FROM work_types WHERE kind = 'mechanized' AND demo_session_id = $1`,
+          [req.demo_session_id]
+        )
+      : await pool.query(`SELECT name FROM work_types WHERE kind = 'mechanized'`);
+
+    const attParams = [ownerVal];
+    let attDateWhere;
+    if (date) {
+      attParams.push(date);
+      attDateWhere = `a.date = $${attParams.length}`;
+    } else {
+      attParams.push(from, to);
+      attDateWhere = `a.date >= $${attParams.length - 1} AND a.date <= $${attParams.length}`;
+    }
+    const presentResult = await pool.query(
+      `SELECT a.date, a.employee_id, e.name, a.people_count
+       FROM attendance a JOIN employees e ON e.id = a.employee_id
+       WHERE a.${ownerCol} = $1 AND ${attDateWhere}
+       ORDER BY a.date, e.name`,
+      attParams
+    );
+
+    const allocParams = [ownerVal];
+    let allocDateWhere;
+    if (date) {
+      allocParams.push(date);
+      allocDateWhere = `date = $${allocParams.length}`;
+    } else {
+      allocParams.push(from, to);
+      allocDateWhere = `date >= $${allocParams.length - 1} AND date <= $${allocParams.length}`;
+    }
+    const allocResult = await pool.query(
+      `SELECT date, employee_id, work_type, quarter, people_count
+       FROM people_allocations
+       WHERE ${ownerCol} = $1 AND ${allocDateWhere}
+       ORDER BY date, work_type, quarter`,
+      allocParams
+    );
+
+    const enterprise = DEMO_MODE ? 'ООО «Демо-Агро»' : BRAND_NAME;
+    const mechanizedNames = new Set(mechResult.rows.map((r) => r.name));
+
+    res.json(buildAccountingTsv({
+      logs: logsResult.rows,
+      present: presentResult.rows,
+      allocations: allocResult.rows,
+      mechanizedNames,
+      enterprise,
+      varietyStub: 'Ркацители',
+      yearStub: '2020',
+    }));
+  } catch (error) {
+    console.error('Accounting export error:', error);
     res.status(500).json({ error: error.message });
   }
 });
