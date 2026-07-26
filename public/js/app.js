@@ -892,6 +892,7 @@ class BrigadeAssistant {
       <div class="ctx-block daily-totals">
         <div class="block-label">Всего за день</div>
         <div id="i2-totals">${this.renderDailyTotalsHtml()}</div>
+        ${this.accountingExportButtonsHtml('i2-accounting-msg')}
       </div>
     `;
     this.refreshI2Cells();
@@ -2836,6 +2837,80 @@ class BrigadeAssistant {
     }
   }
 
+  // Кнопки «Скопировать для бухгалтера» / «Поделиться» — рядом с итогами
+  // на Вводе (msgId 'i2-accounting-msg') и в Отчёте (msgId 'report-accounting-msg').
+  accountingExportButtonsHtml(msgId) {
+    const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+    return `
+      <div class="accounting-export-actions" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <button type="button" class="mini-btn" onclick="app.copyAccountingExport('${msgId}')">Скопировать для бухгалтера</button>
+        ${canShare ? `<button type="button" class="mini-btn" onclick="app.shareAccountingExport('${msgId}')">Поделиться</button>` : ''}
+        <span id="${msgId}" class="auth-msg"></span>
+      </div>`;
+  }
+
+  // Строит URL и запрашивает выгрузку для бухгалтера — контекст (день или
+  // период) определяется по msgId, откуда была вызвана кнопка.
+  async fetchAccountingExport(msgId) {
+    const demoMode = !!(this.config && this.config.demoMode);
+    let url;
+    if (msgId === 'i2-accounting-msg') {
+      url = '/api/accounting/export?date=' + encodeURIComponent(this.inputDate);
+    } else {
+      const from = document.getElementById('from-date').value;
+      const to = document.getElementById('to-date').value;
+      if (!from || !to) throw new Error('Укажите обе даты');
+      url = `/api/accounting/export?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+    }
+    if (!demoMode && this.estate) {
+      url += '&estate=' + encodeURIComponent(this.estate);
+    }
+    const r = await this.apiFetch(url);
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || 'Не удалось получить выгрузку');
+    return data;
+  }
+
+  async copyAccountingExport(msgId) {
+    const show = (t) => { const el = document.getElementById(msgId); if (el) { el.className = 'auth-msg'; el.textContent = t; } };
+    try {
+      const data = await this.fetchAccountingExport(msgId);
+      if (!data.rowCount) { show('Нет ручных работ за этот период'); return; }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(data.text);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = data.text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+      }
+      show('✓ Скопировано — вставь в Excel');
+      setTimeout(() => { const el = document.getElementById(msgId); if (el && el.textContent.startsWith('✓')) el.textContent = ''; }, 2500);
+    } catch (e) {
+      show('❌ ' + (e.message || e));
+    }
+  }
+
+  async shareAccountingExport(msgId) {
+    const show = (t) => { const el = document.getElementById(msgId); if (el) { el.className = 'auth-msg'; el.textContent = t; } };
+    try {
+      const data = await this.fetchAccountingExport(msgId);
+      if (!data.rowCount) { show('Нет ручных работ за этот период'); return; }
+      if (typeof navigator.share === 'function') {
+        await navigator.share({ text: data.text, title: 'Для бухгалтера' });
+      } else {
+        await this.copyAccountingExport(msgId);
+      }
+    } catch (e) {
+      if (e && e.name === 'AbortError') return; // пользователь закрыл диалог «Поделиться»
+      show('❌ ' + (e.message || e));
+    }
+  }
+
   // Переключает чип-фильтр (квартал 'q' или вид работ 'wt') и перерисовывает.
   togglePerfFilter(kind, value) {
     const set = kind === 'q' ? this.perfQuarters : this.perfWorkTypes;
@@ -3104,7 +3179,7 @@ class BrigadeAssistant {
       const header = `<div class="report-header">Отчёт с ${this.escapeHtml(from)} по ${this.escapeHtml(to)}</div>`;
       resultDiv.innerHTML = header + this.renderPlatesReportHtml(data.logs, {
         grandLabel: 'Всего за период',
-      });
+      }) + this.accountingExportButtonsHtml('report-accounting-msg');
     } catch (e) {
       resultDiv.innerHTML = '<p style="color:#c0392b;padding:10px;">❌ ' + e.message + '</p>';
     }
