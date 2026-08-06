@@ -18,67 +18,143 @@ class BrigadeAssistant {
     this.selectedEmployeeId = null;
     this.rosterOpen = false;
     this.adding = false;          // защита от двойного «Добавить»
+    // Запасной конфиг — чтобы UI не падал до /api/config или без demo-ui.js
+    this.config = { demoMode: false, brandName: 'Помощьник Бригадира', brandLogo: '🍇' };
     this.init();
   }
 
-  async init() {
-    await this.loadConfig();
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/service-worker.js').catch(e => console.log('SW error:', e));
+  // demo-ui.js иногда не попадает в кэш PWA — не даём из-за этого пустой экран.
+  demoBannerHtml() {
+    try {
+      return (window.DemoUI && window.DemoUI.renderDemoBanner)
+        ? (window.DemoUI.renderDemoBanner(this.config) || '')
+        : '';
+    } catch (e) {
+      return '';
     }
+  }
 
-    if (this.config.demoMode) {
-      // Демо: убедимся что сессия создана
-      await fetch('/api/demo/session', { method: 'POST' });
-      // Проверим есть ли культура
-      const r = await fetch('/api/estates');
-      const estates = await r.json();
-      if (estates.length === 0) {
-        this.renderCultureModal();
+  demoResetHtml() {
+    try {
+      return (window.DemoUI && window.DemoUI.renderDemoResetButton)
+        ? (window.DemoUI.renderDemoResetButton() || '')
+        : '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  showBoot(text) {
+    const root = document.getElementById('root');
+    if (!root) return;
+    root.innerHTML = `
+      <div class="container auth-box">
+        <h1>${this.config.brandLogo} ${this.escapeHtml(this.config.brandName)}</h1>
+        <p style="text-align:center;padding:16px 8px;color:#555;">${this.escapeHtml(text)}</p>
+      </div>
+    `;
+  }
+
+  showBootError(err) {
+    const root = document.getElementById('root');
+    if (!root) return;
+    const msg = (err && err.message) ? String(err.message) : String(err || 'Неизвестная ошибка');
+    root.innerHTML = `
+      <div class="container auth-box">
+        <h1>${this.config.brandLogo} ${this.escapeHtml(this.config.brandName)}</h1>
+        <p style="text-align:center;padding:8px;color:#c0392b;">Не удалось открыть приложение</p>
+        <p style="text-align:center;font-size:14px;color:#555;">${this.escapeHtml(msg)}</p>
+        <button onclick="location.reload()">Обновить</button>
+        <button class="logout-btn" style="margin-top:8px;" onclick="app.forceResetClient()">Сбросить кэш и войти снова</button>
+      </div>
+    `;
+  }
+
+  async forceResetClient() {
+    try {
+      await fetch('/api/logout', { method: 'POST' });
+    } catch (e) { /* ignore */ }
+    try {
+      localStorage.clear();
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      }
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+      }
+    } catch (e) {
+      console.error('forceResetClient:', e);
+    }
+    location.reload();
+  }
+
+  async init() {
+    this.showBoot('Загрузка…');
+    try {
+      await this.loadConfig();
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/service-worker.js').catch(e => console.log('SW error:', e));
+      }
+
+      if (this.config.demoMode) {
+        // Демо: убедимся что сессия создана
+        await fetch('/api/demo/session', { method: 'POST' });
+        // Проверим есть ли культура
+        const r = await fetch('/api/estates');
+        const estates = await r.json();
+        if (!Array.isArray(estates) || estates.length === 0) {
+          this.renderCultureModal();
+          return;
+        }
+        this.estate = estates[0].id;
+        this.estates = estates;
+        await this.loadQuarters();
+        await this.loadEmployees();
+        await this.loadWorkTypes();
+        await this.loadAttendance(this.inputDate);
+        await this.loadTodayEntries(this.inputDate);
+        this.render();
         return;
       }
-      this.estate = estates[0].id;
-      this.estates = estates;
-      await this.loadQuarters();
+
+      // Нужна ли первичная настройка (нет ни одного администратора)?
+      try {
+        const sr = await fetch('/api/setup-needed');
+        const sd = await sr.json();
+        if (sd.needed) { this.renderSetup(); return; }
+      } catch (e) { /* сервер недоступен — упадём в экран входа ниже */ }
+      // Вошёл ли пользователь?
+      try {
+        const mr = await fetch('/api/me');
+        if (mr.ok) {
+          this.me = await mr.json();
+        } else {
+          this.renderAuth(); return;
+        }
+      } catch (e) {
+        this.renderAuth(); return;
+      }
+      // Вошёл — грузим приложение.
+      await this.loadEstates();
+      if (!Array.isArray(this.estates)) this.estates = [];
+      if (this.estate && !this.estates.find(e => e.id === this.estate)) {
+        this.estate = '';
+        localStorage.removeItem('selectedEstate');
+      }
+      if (this.estate) {
+        await this.loadQuarters();
+      }
       await this.loadEmployees();
       await this.loadWorkTypes();
       await this.loadAttendance(this.inputDate);
       await this.loadTodayEntries(this.inputDate);
       this.render();
-      return;
-    }
-
-    // Нужна ли первичная настройка (нет ни одного администратора)?
-    try {
-      const sr = await fetch('/api/setup-needed');
-      const sd = await sr.json();
-      if (sd.needed) { this.renderSetup(); return; }
-    } catch (e) { /* сервер недоступен — упадём в экран входа ниже */ }
-    // Вошёл ли пользователь?
-    try {
-      const mr = await fetch('/api/me');
-      if (mr.ok) {
-        this.me = await mr.json();
-      } else {
-        this.renderAuth(); return;
-      }
     } catch (e) {
-      this.renderAuth(); return;
+      console.error('init failed:', e);
+      this.showBootError(e);
     }
-    // Вошёл — грузим приложение.
-    await this.loadEstates();
-    if (this.estate && !this.estates.find(e => e.id === this.estate)) {
-      this.estate = '';
-      localStorage.removeItem('selectedEstate');
-    }
-    if (this.estate) {
-      await this.loadQuarters();
-    }
-    await this.loadEmployees();
-    await this.loadWorkTypes();
-    await this.loadAttendance(this.inputDate);
-    await this.loadTodayEntries(this.inputDate);
-    this.render();
   }
 
   // Обёртка над fetch: при 401 (вошёл — но больше не активен) — экран входа.
@@ -104,8 +180,15 @@ class BrigadeAssistant {
   async loadEstates() {
     try {
       const r = await fetch('/api/estates');
-      this.estates = await r.json();
+      const data = await r.json().catch(() => []);
+      this.estates = Array.isArray(data) ? data : [];
+      if (r.status === 401) {
+        this.me = null;
+        this.renderAuth();
+        throw new Error('Требуется вход');
+      }
     } catch (error) {
+      if (error && error.message === 'Требуется вход') throw error;
       console.error('Failed to load estates:', error);
       this.estates = [];
     }
@@ -316,7 +399,7 @@ class BrigadeAssistant {
     const root = document.getElementById('root');
     root.innerHTML = `
       <div class="container auth-box">
-        ${window.DemoUI.renderDemoBanner(this.config)}
+        ${this.demoBannerHtml()}
         <h1>${this.config.brandLogo} ${this.config.brandName}</h1>
         <p class="auth-hint">Введи свою культуру — что у тебя растёт?</p>
         <div class="form-group">
@@ -363,7 +446,7 @@ class BrigadeAssistant {
     const root = document.getElementById('root');
     root.innerHTML = `
       <div class="container auth-box">
-        ${window.DemoUI.renderDemoBanner(this.config)}
+        ${this.demoBannerHtml()}
         <h1>${this.config.brandLogo} ${this.config.brandName}</h1>
         <p class="auth-hint">У культуры «${culture}» — что считаем?</p>
         <button onclick="app.submitCultureWithUnit('${culture}', 'bush')">🌱 Кусты</button>
@@ -390,15 +473,15 @@ class BrigadeAssistant {
     root.innerHTML = `
       <div class="container">
         <div class="app-header">
-          ${window.DemoUI.renderDemoBanner(this.config)}
+          ${this.demoBannerHtml()}
           <h1>${this.config.brandLogo} ${this.config.brandName}</h1>
           <div class="app-user">
             ${!this.config.demoMode ? `<span>${this.escapeHtml(this.me ? this.me.login : '')}</span>` : ''}
-            ${this.config.demoMode ? window.DemoUI.renderDemoResetButton() : ''}
+            ${this.config.demoMode ? this.demoResetHtml() : ''}
             ${!this.config.demoMode ? `<button class="logout-btn" onclick="app.logout()">Выйти</button>` : ''}
             <select id="estate-sel" class="estate-chip" required onchange="app.onEstateChange()">
               <option value="">📍 Выбор хозяйства</option>
-              ${this.estates.map(e => `<option value="${e.id}" ${e.id === this.estate ? 'selected' : ''}>${this.escapeHtml(e.name)}</option>`).join('')}
+              ${(Array.isArray(this.estates) ? this.estates : []).map(e => `<option value="${e.id}" ${e.id === this.estate ? 'selected' : ''}>${this.escapeHtml(e.name)}</option>`).join('')}
             </select>
           </div>
         </div>
