@@ -1,12 +1,21 @@
-const CACHE_NAME = 'brigade-v22';
+const CACHE_NAME = 'brigade-v23';
 const urlsToCache = [
   '/',
   '/index.html',
   '/styles.css',
+  '/styles.css?v=23',
   '/js/app.js',
+  '/js/app.js?v=23',
   '/js/demo-ui.js',
+  '/js/demo-ui.js?v=23',
   '/manifest.json'
 ];
+
+function fetchWithTimeout(request, ms) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  return fetch(request, { signal: ctrl.signal }).finally(() => clearTimeout(timer));
+}
 
 // Установка Service Worker
 self.addEventListener('install', event => {
@@ -45,9 +54,9 @@ self.addEventListener('fetch', event => {
     return; // браузер обработает сам, без вмешательства SW
   }
 
-  // Статические ресурсы — network-first, кэш как fallback на офлайн
+  // Статика: сеть с таймаутом, иначе кэш. Без таймаута телефон может висеть вечно.
   event.respondWith(
-    fetch(event.request)
+    fetchWithTimeout(event.request, 10000)
       .then(response => {
         if (response && response.status === 200 && response.type === 'basic') {
           const clone = response.clone();

@@ -71,27 +71,29 @@ class BrigadeAssistant {
   }
 
   async forceResetClient() {
-    try {
-      await fetch('/api/logout', { method: 'POST' });
-    } catch (e) { /* ignore */ }
-    try {
-      localStorage.clear();
-      if ('caches' in window) {
-        const keys = await caches.keys();
-        await Promise.all(keys.map((k) => caches.delete(k)));
-      }
-      if ('serviceWorker' in navigator) {
-        const regs = await navigator.serviceWorker.getRegistrations();
-        await Promise.all(regs.map((r) => r.unregister()));
-      }
-    } catch (e) {
-      console.error('forceResetClient:', e);
+    if (typeof window.__forceResetClient === 'function') {
+      return window.__forceResetClient();
     }
-    location.reload();
+    location.href = '/?fresh=' + Date.now();
+  }
+
+  async fetchWithTimeout(url, options = {}, ms = 25000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    try {
+      return await fetch(url, { ...options, signal: ctrl.signal });
+    } catch (e) {
+      if (e && e.name === 'AbortError') {
+        throw new Error('Сервер не отвечает. Подожди минуту или нажми «Сбросить кэш».');
+      }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async init() {
-    this.showBoot('Загрузка…');
+    this.showBoot('Загрузка… подождите, сервер может просыпаться');
     try {
       await this.loadConfig();
       if ('serviceWorker' in navigator) {
@@ -100,9 +102,9 @@ class BrigadeAssistant {
 
       if (this.config.demoMode) {
         // Демо: убедимся что сессия создана
-        await fetch('/api/demo/session', { method: 'POST' });
+        await this.fetchWithTimeout('/api/demo/session', { method: 'POST' });
         // Проверим есть ли культура
-        const r = await fetch('/api/estates');
+        const r = await this.fetchWithTimeout('/api/estates');
         const estates = await r.json();
         if (!Array.isArray(estates) || estates.length === 0) {
           this.renderCultureModal();
@@ -121,13 +123,13 @@ class BrigadeAssistant {
 
       // Нужна ли первичная настройка (нет ни одного администратора)?
       try {
-        const sr = await fetch('/api/setup-needed');
+        const sr = await this.fetchWithTimeout('/api/setup-needed');
         const sd = await sr.json();
         if (sd.needed) { this.renderSetup(); return; }
       } catch (e) { /* сервер недоступен — упадём в экран входа ниже */ }
       // Вошёл ли пользователь?
       try {
-        const mr = await fetch('/api/me');
+        const mr = await this.fetchWithTimeout('/api/me');
         if (mr.ok) {
           this.me = await mr.json();
         } else {
@@ -159,7 +161,7 @@ class BrigadeAssistant {
 
   // Обёртка над fetch: при 401 (вошёл — но больше не активен) — экран входа.
   async apiFetch(url, options) {
-    const r = await fetch(url, options);
+    const r = await this.fetchWithTimeout(url, options);
     if (r.status === 401) {
       this.me = null;
       this.renderAuth();
@@ -170,7 +172,7 @@ class BrigadeAssistant {
 
   async loadConfig() {
     try {
-      const r = await fetch('/api/config');
+      const r = await this.fetchWithTimeout('/api/config', {}, 45000);
       this.config = await r.json();
     } catch (e) {
       this.config = { demoMode: false, brandName: 'Помощьник Бригадира', brandLogo: '🍇' };
@@ -179,7 +181,7 @@ class BrigadeAssistant {
 
   async loadEstates() {
     try {
-      const r = await fetch('/api/estates');
+      const r = await this.fetchWithTimeout('/api/estates');
       const data = await r.json().catch(() => []);
       this.estates = Array.isArray(data) ? data : [];
       if (r.status === 401) {
