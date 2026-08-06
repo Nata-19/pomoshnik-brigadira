@@ -1,9 +1,10 @@
-const CACHE_NAME = 'brigade-v21';
+const CACHE_NAME = 'brigade-v22';
 const urlsToCache = [
   '/',
   '/index.html',
   '/styles.css',
   '/js/app.js',
+  '/js/demo-ui.js',
   '/manifest.json'
 ];
 
