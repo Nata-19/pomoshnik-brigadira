@@ -7,14 +7,50 @@
     <link rel="manifest" href="/manifest.json">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'><text y='170' font-size='180' font-weight='bold'>🍇</text></svg>">
     <title>Помощьник Бригадира</title>
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles.css?v=23">
 </head>
 <body>
-    <div id="root"></div>
-    <script src="/js/demo-ui.js"></script>
-    <script src="/js/app.js"></script>
+    <div id="root">
+      <div class="container auth-box" id="boot-shell">
+        <h1>🍇 Помощьник Бригадира</h1>
+        <p id="boot-msg" style="text-align:center;padding:16px 8px;color:#555;">Загрузка…</p>
+        <button id="boot-reset" type="button" style="display:none;margin-top:8px;" onclick="window.__forceResetClient()">
+          Сбросить кэш и открыть заново
+        </button>
+      </div>
+    </div>
     <script>
-fetch('/api/config').then(r => r.json()).then(c => { document.title = c.brandName; });
+    // Работает даже если app.js не загрузился — иначе на телефоне остаётся пустой экран.
+    window.__forceResetClient = async function () {
+      try { await fetch('/api/logout', { method: 'POST' }); } catch (e) {}
+      try {
+        try { localStorage.clear(); } catch (e) {}
+        if ('caches' in window) {
+          var keys = await caches.keys();
+          await Promise.all(keys.map(function (k) { return caches.delete(k); }));
+        }
+        if ('serviceWorker' in navigator) {
+          var regs = await navigator.serviceWorker.getRegistrations();
+          await Promise.all(regs.map(function (r) { return r.unregister(); }));
+        }
+      } catch (e) {}
+      location.href = '/?fresh=' + Date.now();
+    };
+    setTimeout(function () {
+      var shell = document.getElementById('boot-shell');
+      if (!shell) return;
+      var msg = document.getElementById('boot-msg');
+      var btn = document.getElementById('boot-reset');
+      if (msg) msg.textContent = 'Долго загружается. Нажми кнопку ниже.';
+      if (btn) btn.style.display = 'block';
+    }, 12000);
+    </script>
+    <script src="/js/demo-ui.js?v=23"></script>
+    <script src="/js/app.js?v=23"></script>
+    <script>
+    fetch('/api/config').then(function (r) { return r.json(); }).then(function (c) {
+      if (c && c.brandName) document.title = c.brandName;
+    }).catch(function () {});
     </script>
 </body>
 </html>
