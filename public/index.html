@@ -7,13 +7,13 @@
     <link rel="manifest" href="/manifest.json">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'><text y='170' font-size='180' font-weight='bold'>🍇</text></svg>">
     <title>Помощьник Бригадира</title>
-    <link rel="stylesheet" href="/styles.css?v=23">
+    <link rel="stylesheet" href="/styles.css?v=24">
 </head>
 <body>
     <div id="root">
       <div class="container auth-box" id="boot-shell">
         <h1>🍇 Помощьник Бригадира</h1>
-        <p id="boot-msg" style="text-align:center;padding:16px 8px;color:#555;">Загрузка…</p>
+        <p id="boot-msg" style="text-align:center;padding:16px 8px;color:#555;">Загрузка… на телефоне сервер может просыпаться до 1–2 минут</p>
         <button id="boot-reset" type="button" style="display:none;margin-top:8px;" onclick="window.__forceResetClient()">
           Сбросить кэш и открыть заново
         </button>
@@ -43,10 +43,10 @@
       var btn = document.getElementById('boot-reset');
       if (msg) msg.textContent = 'Долго загружается. Нажми кнопку ниже.';
       if (btn) btn.style.display = 'block';
-    }, 12000);
+    }, 20000);
     </script>
-    <script src="/js/demo-ui.js?v=23"></script>
-    <script src="/js/app.js?v=23"></script>
+    <script src="/js/demo-ui.js?v=24"></script>
+    <script src="/js/app.js?v=24"></script>
     <script>
     fetch('/api/config').then(function (r) { return r.json(); }).then(function (c) {
       if (c && c.brandName) document.title = c.brandName;

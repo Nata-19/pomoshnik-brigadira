@@ -345,31 +345,61 @@ class BrigadeAssistant {
           <label>Пароль${isReg ? ' (не короче 8 символов)' : ''}:</label>
           <input type="password" id="auth-password" autocomplete="${isReg ? 'new-password' : 'current-password'}">
         </div>
-        <button onclick="app.${isReg ? 'submitRegister' : 'submitLogin'}()">${isReg ? 'Зарегистрироваться' : 'Войти'}</button>
+        <button id="auth-submit" onclick="app.${isReg ? 'submitRegister' : 'submitLogin'}()">${isReg ? 'Зарегистрироваться' : 'Войти'}</button>
         <div id="auth-msg" class="auth-msg"></div>
       </div>
     `;
+  }
+
+  async wakeServer(msg) {
+    if (msg) {
+      msg.className = 'auth-msg';
+      msg.textContent = '⏳ Бужу сервер… на телефоне иногда до 1–2 минут';
+    }
+    try {
+      await this.fetchWithTimeout('/health', {}, 90000);
+    } catch (e) {
+      // Даже если health не успел — всё равно пробуем логин ниже.
+    }
   }
 
   async submitLogin() {
     const login = document.getElementById('auth-login').value.trim();
     const password = document.getElementById('auth-password').value;
     const msg = document.getElementById('auth-msg');
+    const btn = document.getElementById('auth-submit');
     if (!login || !password) { msg.textContent = '❌ Укажи логин и пароль'; return; }
+    if (this.authBusy) return;
+    this.authBusy = true;
+    if (btn) { btn.disabled = true; btn.textContent = 'Вхожу…'; }
     try {
-      const r = await fetch('/api/login', {
+      await this.wakeServer(msg);
+      if (msg) msg.textContent = '⏳ Отправляю логин и пароль…';
+      const r = await this.fetchWithTimeout('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
         body: JSON.stringify({ login, password }),
-      });
-      const data = await r.json();
+      }, 90000);
+      const data = await r.json().catch(() => ({}));
       if (r.ok) {
+        if (msg) msg.textContent = '✅ Вход выполнен, открываю…';
         location.reload();
-      } else {
-        msg.textContent = '❌ ' + (data.error || 'Ошибка');
+        return;
       }
+      msg.className = 'auth-msg';
+      msg.textContent = '❌ ' + (data.error || ('Ошибка входа (' + r.status + ')'));
     } catch (e) {
-      msg.textContent = '❌ ' + e.message;
+      const text = (e && e.message) ? e.message : String(e);
+      msg.className = 'auth-msg';
+      msg.textContent = '❌ ' + (
+        /Failed to fetch|NetworkError|abort|отвечает/i.test(text)
+          ? 'Нет связи с сервером. Подожди минуту и нажми «Войти» ещё раз (один раз).'
+          : text
+      );
+    } finally {
+      this.authBusy = false;
+      if (btn) { btn.disabled = false; btn.textContent = 'Войти'; }
     }
   }
 
@@ -377,14 +407,21 @@ class BrigadeAssistant {
     const login = document.getElementById('auth-login').value.trim();
     const password = document.getElementById('auth-password').value;
     const msg = document.getElementById('auth-msg');
+    const btn = document.getElementById('auth-submit');
     if (!login || !password) { msg.textContent = '❌ Укажи логин и пароль'; return; }
+    if (this.authBusy) return;
+    this.authBusy = true;
+    if (btn) { btn.disabled = true; btn.textContent = 'Отправляю…'; }
     try {
-      const r = await fetch('/api/register', {
+      await this.wakeServer(msg);
+      if (msg) msg.textContent = '⏳ Регистрация…';
+      const r = await this.fetchWithTimeout('/api/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
         body: JSON.stringify({ login, password }),
-      });
-      const data = await r.json();
+      }, 90000);
+      const data = await r.json().catch(() => ({}));
       if (r.ok) {
         msg.className = 'auth-msg auth-ok';
         msg.textContent = '✅ Заявка отправлена. Ожидайте подтверждения администратором.';
@@ -393,7 +430,11 @@ class BrigadeAssistant {
         msg.textContent = '❌ ' + (data.error || 'Ошибка');
       }
     } catch (e) {
-      msg.textContent = '❌ ' + e.message;
+      msg.className = 'auth-msg';
+      msg.textContent = '❌ ' + ((e && e.message) || e);
+    } finally {
+      this.authBusy = false;
+      if (btn) { btn.disabled = false; btn.textContent = 'Зарегистрироваться'; }
     }
   }
 
