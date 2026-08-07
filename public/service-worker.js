@@ -1,13 +1,13 @@
-const CACHE_NAME = 'brigade-v23';
+const CACHE_NAME = 'brigade-v24';
 const urlsToCache = [
   '/',
   '/index.html',
   '/styles.css',
-  '/styles.css?v=23',
+  '/styles.css?v=24',
   '/js/app.js',
-  '/js/app.js?v=23',
+  '/js/app.js?v=24',
   '/js/demo-ui.js',
-  '/js/demo-ui.js?v=23',
+  '/js/demo-ui.js?v=24',
   '/manifest.json'
 ];
 
@@ -56,7 +56,7 @@ self.addEventListener('fetch', event => {
 
   // Статика: сеть с таймаутом, иначе кэш. Без таймаута телефон может висеть вечно.
   event.respondWith(
-    fetchWithTimeout(event.request, 10000)
+    fetchWithTimeout(event.request, 20000)
       .then(response => {
         if (response && response.status === 200 && response.type === 'basic') {
           const clone = response.clone();
