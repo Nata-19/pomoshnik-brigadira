@@ -314,10 +314,13 @@ function authOrDemo(req, res, next) {
 }
 
 function setAuthCookie(res, token) {
+  // path: '/' — кука видна и иконке PWA, и вкладке браузера на том же сайте.
+  // maxAge 1 год + JWT 365d: вход «как раньше» — без экрана логина каждый раз.
   res.cookie('token', token, {
     httpOnly: true,
     secure: true,
     sameSite: 'lax',
+    path: '/',
     maxAge: 365 * 24 * 60 * 60 * 1000,
   });
 }
@@ -636,11 +639,14 @@ app.post('/api/logout', (req, res) => {
     httpOnly: true,
     secure: true,
     sameSite: 'lax',
+    path: '/',
   });
   res.json({ success: true });
 });
 
 app.get('/api/me', requireAuthMw, (req, res) => {
+  // Продлеваем вход при каждом успешном открытии приложения.
+  setAuthCookie(res, auth.signToken(req.brigadier.id, SESSION_SECRET));
   res.json({ login: req.brigadier.login, is_admin: req.brigadier.is_admin });
 });
 
