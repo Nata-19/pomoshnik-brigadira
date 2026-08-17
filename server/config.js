@@ -3,7 +3,8 @@
 
 const DEMO_MODE = process.env.DEMO_MODE === 'true';
 
-const BRAND_NAME = process.env.BRAND_NAME || (DEMO_MODE ? 'Демо Помощник' : 'Помощьник Бригадира');
+// Демо/публичное имя = как в Роспатенте. Боевой Render без BRAND_NAME — старое имя, не меняем.
+const BRAND_NAME = process.env.BRAND_NAME || (DEMO_MODE ? 'Агроучёт работ' : 'Помощьник Бригадира');
 const BRAND_LOGO = process.env.BRAND_LOGO || (DEMO_MODE ? '🌱' : '🍇');
 const CONTACT_PHONE = process.env.CONTACT_PHONE || '+79783116389';
 
