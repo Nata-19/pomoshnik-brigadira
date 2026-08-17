@@ -8,6 +8,7 @@ const DataParser = require('./parser');
 const rowControl = require('./rowControl');
 const { buildHectaresReport } = require('./hectaresReport');
 const { withTransaction } = require('./db');
+const { applyBatchAtomically } = require('./conflictBatch');
 const cookieParser = require('cookie-parser');
 const crypto = require('crypto');
 const auth = require('./auth');
@@ -1604,15 +1605,19 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
           return { ...c, rowBushes: rb };
         });
         const conflictsOut = { sameDay: withBushes(cls.sameDay), otherDay: withBushes(cls.otherDay) };
+        const conflictGroups = rowControl.groupConflicts(conflictsOut, {
+          estate, quarter, cell, work_type: work_type.trim(), measure_mode,
+        });
 
         // Все ряды заняты — ничего не сохраняем, отдаём конфликты на разрешение.
         if (cls.free.length === 0 && (cls.sameDay.length || cls.otherDay.length)) {
-          return res.json({ success: false, savedRows: [], conflicts: conflictsOut });
+          return res.json({ success: false, savedRows: [], conflicts: conflictsOut, conflictGroups });
         }
 
         // Сохраняем только свободные ряды; конфликтные вернём клиенту.
         rowNums = cls.free;
         req._rowConflicts = conflictsOut;
+        req._rowConflictGroups = conflictGroups;
       }
 
       rowsStr = rowNums.join(',');
@@ -1669,6 +1674,7 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
         id: ins.rows[0].id,
         savedRows: rowsStr ? rowsStr.split(',') : [],
         conflicts: req._rowConflicts || { sameDay: [], otherDay: [] },
+        conflictGroups: req._rowConflictGroups || [],
       });
     }
 
@@ -1704,6 +1710,7 @@ app.post('/api/logs', authOrDemo, async (req, res) => {
       id: ins.rows[0].id,
       savedRows: rowsStr ? rowsStr.split(',') : [],
       conflicts: req._rowConflicts || { sameDay: [], otherDay: [] },
+      conflictGroups: req._rowConflictGroups || [],
     });
   } catch (error) {
     console.error('Create log error:', error);
@@ -1894,6 +1901,149 @@ app.post('/api/logs/resolve', authOrDemo, async (req, res) => {
       return res.status(error.httpStatus).json({ error: error.message });
     }
     console.error('Resolve error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Пакетное разрешение одной группы соседних конфликтных рядов.
+// Все ряды применяются одной транзакцией: ошибка любого ряда откатывает пакет.
+app.post('/api/logs/resolve-batch', authOrDemo, async (req, res) => {
+  try {
+    const {
+      action, date, estate, quarter, cell, work_type, measure_mode,
+      employee, conflicts, assignments,
+    } = req.body || {};
+    const fail = (message, status = 400) => {
+      const error = new Error(message);
+      error.httpStatus = status;
+      return error;
+    };
+
+    let invForParser, parserToUse;
+    if (DEMO_MODE) {
+      invForParser = await demo.getDemoInventory(pool, req.demo_session_id);
+      parserToUse = new DataParser(invForParser);
+    } else {
+      invForParser = inventory;
+      parserToUse = parser;
+    }
+    if (!estate || !invForParser.estates[estate]) throw fail('Не выбрано хозяйство');
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw fail('Дата в формате YYYY-MM-DD');
+    if (!['rows_bushes', 'rows_only'].includes(measure_mode)) throw fail('Режим должен быть с рядами');
+    if (!quarter || !cell) throw fail('Не указаны квартал и клетка');
+    if (!work_type || !work_type.trim()) throw fail('Не выбран вид работ');
+    if (!employee || !employee.trim()) throw fail('Не указан рабочий');
+    if (!['reassign', 'divide', 'postpone'].includes(action)) throw fail('Неизвестное действие');
+
+    const source = Array.isArray(conflicts) ? conflicts : [];
+    if (source.length === 0 || source.length > 500) throw fail('Не указан диапазон конфликтных рядов');
+    const seenRows = new Set();
+    const rows = source.map((item) => {
+      const row = parseInt(item && item.row, 10);
+      if (!Number.isInteger(row) || seenRows.has(row)) throw fail('Неверный или повторяющийся номер ряда');
+      seenRows.add(row);
+      const firstLogId = parseInt(item && item.firstLogId, 10);
+      if (action !== 'divide' && !Number.isInteger(firstLogId)) {
+        throw fail(`Ряд ${row}: не указана запись первого рабочего`);
+      }
+      let rowBushes = 0;
+      if (measure_mode === 'rows_bushes') {
+        try {
+          rowBushes = parserToUse.getBushesCount(estate, String(quarter), String(cell), [row]);
+        } catch (error) {
+          throw fail(`Ряд ${row}: ${error.message}`);
+        }
+      }
+      return { row, firstLogId, rowBushes };
+    }).sort((a, b) => a.row - b.row);
+
+    let assignees = [];
+    if (action === 'divide') {
+      const cleaned = (Array.isArray(assignments) ? assignments : [])
+        .map((item) => ({
+          employee: item && item.employee ? String(item.employee).trim() : '',
+          weight: item && item.weight !== undefined ? item.weight : null,
+        }))
+        .filter((item) => item.employee);
+      if (new Set(cleaned.map((item) => item.employee)).size !== cleaned.length) {
+        throw fail('Рабочий указан в делении дважды');
+      }
+      let weights;
+      try {
+        weights = rowControl.normalizeBatchWeights(cleaned.map((item) => item.weight));
+      } catch (error) {
+        throw fail(error.message);
+      }
+      assignees = cleaned.map((item, index) => ({ ...item, weight: weights[index] }));
+    }
+
+    const owner = rowOwner(req);
+    const ctx = {
+      date, estate, quarter, cell,
+      work_type: work_type.trim(), measure_mode,
+    };
+
+    await applyBatchAtomically(pool, rows, async (client, item) => {
+      const { row, firstLogId, rowBushes } = item;
+      if (action === 'reassign' || action === 'postpone') {
+        const firstRec = await client.query(
+          `SELECT employee, date FROM work_logs
+           WHERE id = $1 AND ${owner.col} = $2 AND estate_id = $3
+             AND quarter = $4 AND cell = $5 AND work_type = $6 AND measure_mode = $7`,
+          [firstLogId, owner.val, estate, String(quarter), String(cell), work_type.trim(), measure_mode]
+        );
+        if (firstRec.rowCount === 0) throw fail(`Ряд ${row}: запись первого рабочего не найдена`, 404);
+        if (action === 'reassign' && firstRec.rows[0].employee === employee.trim()) {
+          throw fail(`Ряд ${row} уже записан на этого рабочего`);
+        }
+        const removed = await applyRowRemoval(client, owner.col, owner.val, firstLogId, row, rowBushes);
+        if (!removed) throw fail(`Ряд ${row} уже снят с первого рабочего`, 409);
+
+        if (action === 'reassign') {
+          await upsertWorkLog(client, owner.col, owner.val, req, ctx, employee.trim(), row, rowBushes, 1);
+        } else {
+          await insertDisputed(client, {
+            estate, quarter: String(quarter), cell: String(cell),
+            work_type: work_type.trim(), row_num: row, measure_mode,
+            claimed_by: firstRec.rows[0].employee, claimed_date: firstRec.rows[0].date,
+          }, owner, req);
+        }
+        return;
+      }
+
+      const holders = await client.query(
+        `SELECT id, rows FROM work_logs
+         WHERE ${owner.col} = $1 AND estate_id = $2
+           AND quarter = $3 AND cell = $4 AND work_type = $5 AND measure_mode = $6`,
+        [owner.val, estate, String(quarter), String(cell), work_type.trim(), measure_mode]
+      );
+      let strippedAny = false;
+      for (const holder of holders.rows) {
+        const holderRows = String(holder.rows || '').split(',')
+          .map((value) => parseInt(value, 10)).filter(Number.isInteger);
+        if (!holderRows.includes(row)) continue;
+        if (await applyRowRemoval(client, owner.col, owner.val, holder.id, row, rowBushes)) strippedAny = true;
+      }
+      if (!strippedAny) throw fail(`Ряд ${row} уже снят`, 409);
+
+      const bushes = measure_mode === 'rows_bushes'
+        ? rowControl.allocateBushesByWeights(rowBushes, assignees.map((item) => item.weight))
+        : assignees.map(() => 0);
+      for (let index = 0; index < assignees.length; index++) {
+        const assignee = assignees[index];
+        await upsertWorkLog(
+          client, owner.col, owner.val, req, ctx,
+          assignee.employee, row, bushes[index], assignee.weight
+        );
+      }
+    });
+
+    res.json({ success: true, rows: rows.map((item) => item.row) });
+  } catch (error) {
+    if (error && error.httpStatus) {
+      return res.status(error.httpStatus).json({ error: error.message });
+    }
+    console.error('Resolve batch error:', error);
     res.status(500).json({ error: error.message });
   }
 });

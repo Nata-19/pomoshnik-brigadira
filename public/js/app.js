@@ -219,7 +219,8 @@ class BrigadeAssistant {
           onLogConflict: async (item, data) => {
             const body = item.body || {};
             const resolved = await this.resolveRowConflicts(
-              data.conflicts || { sameDay: [], otherDay: [] }, body.employee, body
+              data.conflicts || { sameDay: [], otherDay: [] }, body.employee, body,
+              data.conflictGroups || []
             );
             await this.loadTodayEntries(this.inputDate);
             return resolved; // false = отмена → элемент остаётся в очереди
@@ -321,9 +322,15 @@ class BrigadeAssistant {
     try {
       const r = await this.apiFetch('/api/attendance?date=' + encodeURIComponent(date));
       const data = await r.json();
-      this.present = data.present || [];
+      let present = data.present || [];
+      if (self.OfflineStore && self.OfflineQueueLogic && OfflineQueueLogic.applyPendingAttendance) {
+        const items = await OfflineStore.getAll();
+        present = OfflineQueueLogic.applyPendingAttendance(present, items, date, this.employees);
+      }
+      this.present = present;
     } catch (e) {
-      this.present = [];
+      // Не стираем уже показанную локальную явку при кратком обрыве сети.
+      this.present = this.present || [];
     }
   }
 
@@ -1979,21 +1986,44 @@ previousGuideStep() {
 
   async togglePresent(employeeId) {
     const isPresent = this.present.some(p => p.employee_id === employeeId);
+    const employee = this.employees.find((e) => e.id === employeeId);
+    const previousPresent = this.present.map((p) => ({ ...p }));
+    const previousAllocations = this.allocations.slice();
+
+    // Оптимистично обновляем экран до сетевого запроса.
+    if (isPresent) {
+      this.present = this.present.filter((p) => p.employee_id !== employeeId);
+      this.allocations = this.allocations.filter((a) => a.employee_id !== employeeId);
+      if (this.selectedEmployeeId === employeeId) this.selectedEmployeeId = null;
+    } else {
+      this.present = [...this.present, {
+        employee_id: employeeId,
+        name: employee ? employee.name : '',
+        people_count: null,
+      }].sort((a, b) => String(a.name).localeCompare(String(b.name), 'ru'));
+    }
+    this.renderInput();
+
     try {
-      if (isPresent) {
-        await this.apiFetch('/api/attendance', {
-          method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ date: this.inputDate, employee_id: employeeId }),
-        });
-        if (this.selectedEmployeeId === employeeId) this.selectedEmployeeId = null;
-      } else {
-        await this.markPresent(employeeId);
-      }
+      const result = await this.sendOrQueue({
+        kind: 'attendance',
+        method: isPresent ? 'DELETE' : 'POST',
+        url: '/api/attendance',
+        body: {
+          date: this.inputDate,
+          employee_id: employeeId,
+          employee_name: employee ? employee.name : '',
+        },
+      });
+      if (result.queued) return;
+      if (!result.ok) throw new Error((result.data && result.data.error) || 'Не удалось изменить явку');
       await this.loadAttendance(this.inputDate);
       await this.loadAllocations(this.inputDate); // снятие с явки каскадно удаляет куски разбивки
       this.renderInput();
     } catch (e) {
+      this.present = previousPresent;
+      this.allocations = previousAllocations;
+      this.renderInput();
       alert('Ошибка: ' + e.message);
     }
   }
@@ -2030,26 +2060,38 @@ previousGuideStep() {
       }
       people_count = n;
     }
+    const row = this.present.find(p => p.employee_id === employeeId);
+    const previousCount = row ? row.people_count : null;
+    const previousAllocations = this.allocations.slice();
+    if (row) row.people_count = people_count;
+    if (people_count === null) {
+      this.allocations = this.allocations.filter((a) => a.employee_id !== employeeId);
+    }
+    this.renderInput();
+
     try {
-      const r = await this.apiFetch('/api/attendance', {
+      const employee = this.employees.find((e) => e.id === employeeId);
+      const result = await this.sendOrQueue({
+        kind: 'attendance',
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        url: '/api/attendance',
+        body: {
           date: this.inputDate,
           employee_id: employeeId,
           people_count,
-        }),
+          employee_name: employee ? employee.name : '',
+        },
       });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.error || 'Не удалось сохранить к-во чел.');
-      const row = this.present.find(p => p.employee_id === employeeId);
-      if (row) row.people_count = people_count;
+      if (result.queued) return;
+      if (!result.ok) throw new Error((result.data && result.data.error) || 'Не удалось сохранить к-во чел.');
       // Новое N могло сделать сумму кусков разбивки другой относительно потолка —
       // перечитываем куски (сервер мог их каскадно почистить при сбросе N) и
       // обновляем предупреждение «Разбивка X из N».
       await this.loadAllocations(this.inputDate);
       this.renderInput();
     } catch (e) {
+      if (row) row.people_count = previousCount;
+      this.allocations = previousAllocations;
       alert('Ошибка: ' + e.message);
       await this.loadAttendance(this.inputDate);
       await this.loadAllocations(this.inputDate);
@@ -2229,7 +2271,7 @@ previousGuideStep() {
 
       const conflicts = data.conflicts || { sameDay: [], otherDay: [] };
       if (conflicts.sameDay.length || conflicts.otherDay.length) {
-        await this.resolveRowConflicts(conflicts, employee, body);
+        await this.resolveRowConflicts(conflicts, employee, body, data.conflictGroups || []);
       }
 
       await this.loadTodayEntries(this.inputDate);
@@ -2245,14 +2287,90 @@ previousGuideStep() {
     }
   }
 
-  // Последовательно проводит бригадира по конфликтным рядам.
-  async resolveRowConflicts(conflicts, employee, body) {
-    for (const c of conflicts.sameDay) {
-      await this.resolveSameDay(c, employee, body);
+  // Fallback для ответа старого сервера: собирает соседние ряды по тем же
+  // признакам, что server/rowControl.groupConflicts.
+  groupConflictsForUi(conflicts, body) {
+    const groups = [];
+    const addType = (type, list) => {
+      let current = null;
+      for (const item of (list || []).slice().sort((a, b) => Number(a.row) - Number(b.row))) {
+        const row = Number(item.row);
+        if (!Number.isInteger(row)) continue;
+        const occupant = item.occupant || {};
+        const key = JSON.stringify([
+          type, occupant.employee || '', occupant.date || '',
+          body.estate || '', String(body.quarter || ''), String(body.cell || ''),
+          body.work_type || '', body.measure_mode || '',
+        ]);
+        if (!current || current._key !== key || row !== current.endRow + 1) {
+          current = {
+            _key: key, type, startRow: row, endRow: row, range: String(row),
+            occupant: { employee: occupant.employee, date: occupant.date }, items: [],
+          };
+          groups.push(current);
+        }
+        current.endRow = row;
+        current.range = current.startRow === row ? String(row) : `${current.startRow}–${row}`;
+        current.items.push(item);
+      }
+    };
+    addType('sameDay', conflicts.sameDay);
+    addType('otherDay', conflicts.otherDay);
+    return groups.map(({ _key, ...group }) => group);
+  }
+
+  // Последовательно проводит бригадира по группам, а не по отдельным рядам.
+  async resolveRowConflicts(conflicts, employee, body, conflictGroups = []) {
+    const groups = conflictGroups.length
+      ? conflictGroups
+      : this.groupConflictsForUi(conflicts, body);
+    for (const group of groups) {
+      const resolved = await this.resolveConflictGroup(group, employee, body);
+      if (!resolved) return false;
     }
-    for (const c of conflicts.otherDay) {
-      await this.resolveOtherDay(c, employee, body);
+    return true;
+  }
+
+  async resolveConflictGroup(group, employee, body) {
+    const choice = await this.showOtherDayMenu({
+      row: group.range,
+      occupantName: group.occupant && group.occupant.employee,
+      occupantDate: group.occupant && group.occupant.date,
+      employee,
+    });
+    if (!choice || choice.action === 'cancel') return false;
+
+    const payload = {
+      action: choice.action,
+      date: body.date, estate: body.estate, quarter: body.quarter, cell: body.cell,
+      work_type: body.work_type, measure_mode: body.measure_mode, employee,
+      conflicts: (group.items || []).map((item) => ({
+        row: item.row,
+        firstLogId: item.occupant && item.occupant.logId,
+      })),
+    };
+    if (choice.action === 'divide') {
+      const assignments = await this.showDivideModal({
+        row: group.range,
+        askShare: false,
+        percentageShares: true,
+        preselect: [group.occupant && group.occupant.employee, employee].filter(Boolean),
+      });
+      if (!assignments) return false;
+      payload.assignments = assignments;
     }
+
+    const response = await this.apiFetch('/api/logs/resolve-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      await this.showInfoModal(`Ряды ${group.range}: ${data.error || 'не удалось обработать диапазон'}`);
+      return false;
+    }
+    return true;
   }
 
   // Тот же день: показываем модалку «поделить?» с полем кустов (для rows_bushes).
@@ -2336,12 +2454,13 @@ previousGuideStep() {
 
       const title = document.createElement('div');
       title.className = 'modal-title';
-      title.textContent = `Ряд ${row}`;
+      const isRange = String(row).includes('–');
+      title.textContent = `${isRange ? 'Ряды' : 'Ряд'} ${row}`;
       box.appendChild(title);
 
       const text = document.createElement('div');
       text.className = 'modal-text';
-      text.textContent = `Этот ряд уже отмечал ${occupantName} (${occupantDate}). Что делаем?`;
+      text.textContent = `${isRange ? 'Этот диапазон уже отмечал' : 'Этот ряд уже отмечал'} ${occupantName} (${occupantDate}). Что делаем?`;
       box.appendChild(text);
 
       const actions = document.createElement('div');
@@ -3026,7 +3145,7 @@ previousGuideStep() {
   // Окно деления ряда между рабочими: чекбоксы + доли кустов (пусто = поровну).
   // preselect — имена, отмеченные заранее (занявший ряд и текущий рабочий).
   // Возвращает Promise: массив [{employee, bushes|null}] (≥1) или null при отмене.
-  showDivideModal({ row, askShare, preselect = [], rowBushes = 0 }) {
+  showDivideModal({ row, askShare, percentageShares = false, preselect = [], rowBushes = 0 }) {
     return new Promise((resolve) => {
       if (!this.employees || this.employees.length === 0) {
         this.showInfoModal('Список рабочих не загружен');
@@ -3040,14 +3159,17 @@ previousGuideStep() {
 
       const title = document.createElement('div');
       title.className = 'modal-title';
-      title.textContent = `Ряд ${row} — кто делал?`;
+      const isRange = String(row).includes('–');
+      title.textContent = `${isRange ? 'Ряды' : 'Ряд'} ${row} — кто делал?`;
       box.appendChild(title);
 
       const hint = document.createElement('div');
       hint.className = 'modal-text';
-      hint.textContent = askShare
-        ? 'Отметь рабочих. Если несколько — кусты делятся поровну; можно задать долю вручную.'
-        : 'Отметь рабочих, которые делали ряд.';
+      hint.textContent = percentageShares
+        ? 'Отметь рабочих и задай единую долю в процентах для каждого ряда. Пустые доли поделят остаток поровну.'
+        : askShare
+          ? 'Отметь рабочих. Если несколько — кусты делятся поровну; можно задать долю вручную.'
+          : 'Отметь рабочих, которые делали ряд.';
       box.appendChild(hint);
 
       if (askShare && rowBushes > 0) {
@@ -3090,7 +3212,7 @@ previousGuideStep() {
           shareInput = document.createElement('input');
           shareInput.className = 'modal-input';
           shareInput.inputMode = 'decimal';
-          shareInput.placeholder = 'доля';
+          shareInput.placeholder = percentageShares ? '%' : 'доля';
           shareInput.style.width = '90px';
           shareInput.style.margin = '0';
           rowEl.appendChild(shareInput);
@@ -3117,6 +3239,7 @@ previousGuideStep() {
 
       const close = (result) => { overlay.remove(); resolve(result); };
       primary.addEventListener('click', () => {
+        let invalidPercentage = false;
         const chosen = rows.filter((r) => r.cb.checked).map((r) => {
           if (askShare) {
             let bushes = null;
@@ -3129,11 +3252,18 @@ previousGuideStep() {
           let weight = null;
           if (r.shareInput && r.shareInput.value.trim() !== '') {
             const x = parseFloat(r.shareInput.value.replace(',', '.'));
-            if (isFinite(x) && x >= 0) weight = x;
+            if (percentageShares) {
+              if (!isFinite(x) || x < 0 || x > 100) invalidPercentage = true;
+              else weight = x / 100;
+            } else if (isFinite(x) && x >= 0) weight = x;
           }
           return { employee: r.name, weight };
         });
         if (chosen.length === 0) return; // нечего записывать — ждём выбора
+        if (invalidPercentage) {
+          alert('Доля должна быть от 0 до 100%');
+          return;
+        }
         close(chosen);
       });
       cancel.addEventListener('click', () => close(null));

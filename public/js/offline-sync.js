@@ -29,7 +29,10 @@
     running = true;
     let sent = 0;
     try {
-      const items = await self.OfflineStore.getAll();
+      const queued = await self.OfflineStore.getAll();
+      const items = self.OfflineQueueLogic.orderReplayItems
+        ? self.OfflineQueueLogic.orderReplayItems(queued)
+        : queued;
       for (const item of items) {
         const result = await sendItem(item);
         const verdict = self.OfflineQueueLogic.classifyReplayResult(result);
@@ -45,6 +48,7 @@
             if (handlers && handlers.onLogConflict) {
               const resolved = await handlers.onLogConflict(item, result.data);
               if (resolved) { await self.OfflineStore.remove(item.id); sent++; notifyChanged(); }
+              else break; // отмена диапазона: не перескакиваем к следующим операциям
             }
             continue; // не разрешили здесь — оставляем (повторная отправка идемпотентна)
           }

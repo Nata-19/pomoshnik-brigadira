@@ -1,4 +1,4 @@
-const CACHE_NAME = 'brigade-v35';
+const CACHE_NAME = 'brigade-v36';
 // Общие модули офлайна — те же файлы, что и на странице.
 importScripts('/js/offline-queue-logic.js', '/js/offline-storage.js', '/js/offline-sync.js');
 const urlsToCache = [

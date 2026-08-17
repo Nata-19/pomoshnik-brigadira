@@ -45,6 +45,79 @@ function classifyRows(requestedRows, occupied, today) {
   return { free, sameDay, otherDay };
 }
 
+// Объединяет соседние конфликтные ряды только при полном совпадении владельца,
+// даты, типа конфликта и контекста работы.
+function groupConflicts(conflicts, context = {}) {
+  const groups = [];
+  const addType = (type, list) => {
+    const sorted = (list || []).slice().sort((a, b) => Number(a.row) - Number(b.row));
+    let current = null;
+    for (const item of sorted) {
+      const row = Number(item.row);
+      if (!Number.isInteger(row)) continue;
+      const occupant = item.occupant || {};
+      const key = JSON.stringify([
+        type, occupant.employee || '', occupant.date || '',
+        context.estate || '', String(context.quarter || ''), String(context.cell || ''),
+        context.work_type || '', context.measure_mode || '',
+      ]);
+      const adjacent = current && current.key === key && row === current.endRow + 1;
+      if (!adjacent) {
+        current = {
+          key,
+          type,
+          startRow: row,
+          endRow: row,
+          range: String(row),
+          occupant: { employee: occupant.employee, date: occupant.date },
+          items: [],
+        };
+        groups.push(current);
+      }
+      current.endRow = row;
+      current.range = current.startRow === row ? String(row) : `${current.startRow}–${row}`;
+      current.items.push(item);
+    }
+  };
+  addType('sameDay', conflicts && conflicts.sameDay);
+  addType('otherDay', conflicts && conflicts.otherDay);
+  return groups.map(({ key, ...group }) => group);
+}
+
+// Заполняет пустые доли остатком и требует, чтобы итог был ровно 1.
+function normalizeBatchWeights(values) {
+  const arr = (values || []).map((value) => {
+    if (value === null || value === undefined || value === '') return null;
+    const n = Number(value);
+    if (!isFinite(n) || n < 0 || n > 1) throw new Error('Доля должна быть от 0 до 100%');
+    return n;
+  });
+  if (arr.length === 0) throw new Error('Выбери хотя бы одного рабочего');
+  const explicit = arr.reduce((sum, value) => sum + (value === null ? 0 : value), 0);
+  const blanks = arr.filter((value) => value === null).length;
+  if (explicit > 1 + 1e-9) throw new Error('Сумма долей больше 100%');
+  if (blanks === 0 && Math.abs(explicit - 1) > 1e-9) {
+    throw new Error('Сумма долей должна быть 100%');
+  }
+  const rest = Math.max(1 - explicit, 0);
+  const each = blanks > 0 ? rest / blanks : 0;
+  return arr.map((value) => value === null ? each : value);
+}
+
+// Переводит единые доли в целые кусты конкретного ряда методом наибольших
+// остатков: сумма всегда равна количеству кустов этого ряда.
+function allocateBushesByWeights(total, weights) {
+  if (!Number.isInteger(total) || total < 0) throw new Error('Неверное число кустов');
+  const normalized = normalizeBatchWeights(weights);
+  const raw = normalized.map((weight) => total * weight);
+  const out = raw.map(Math.floor);
+  let remaining = total - out.reduce((sum, value) => sum + value, 0);
+  const order = raw.map((value, index) => ({ index, fraction: value - Math.floor(value) }))
+    .sort((a, b) => b.fraction - a.fraction || a.index - b.index);
+  for (let i = 0; i < remaining; i++) out[order[i % order.length].index]++;
+  return out;
+}
+
 // Убирает ряд removedRow из записи: правит CSV рядов, JSON весов и кусты.
 // rowBushes — кусты ВСЕГО ряда по инвентаризации (rows_only → 0); вычитаем
 // долю снимаемого рабочего = вес_ряда * rowBushes (вес отсутствует → 1).
@@ -183,5 +256,6 @@ module.exports = {
   splitBushes, classifyRows, removeRowFromRecord, distributeBushes,
   parseRowWeights, serializeRowWeights, weightOfRecord,
   weightsFromBushes, fillWeights, formatRows,
-  computeCellReconciliation,
+  computeCellReconciliation, groupConflicts,
+  normalizeBatchWeights, allocateBushesByWeights,
 };
