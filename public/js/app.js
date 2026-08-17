@@ -43,7 +43,13 @@ class BrigadeAssistant {
 
     if (this.config.demoMode) {
       // Демо: убедимся что сессия создана
-      await fetch('/api/demo/session', { method: 'POST' });
+      try {
+        await fetch('/api/demo/session', { method: 'POST' });
+      } catch (e) {
+        // При повторном открытии без сети продолжаем с уже созданной сессией
+        // и GET-данными, сохранёнными Service Worker.
+        if (navigator.onLine) throw e;
+      }
       // Проверим есть ли культура
       const r = await fetch('/api/estates');
       const estates = await r.json();
@@ -57,11 +63,18 @@ class BrigadeAssistant {
       this.estate = estates[0].id;
       this.estates = estates;
       await this.loadQuarters();
-      await this.loadEmployees();
-      await this.loadWorkTypes();
-      await this.loadAttendance(this.inputDate);
-      await this.loadAllocations(this.inputDate);
-      await this.loadTodayEntries(this.inputDate);
+      // Инвентарь всех кварталов нужен офлайн: прогреваем его одновременно
+      // со справочниками, не добавляя последовательных ожиданий на телефоне.
+      await Promise.all([
+        this.preloadCells(),
+        this.loadEmployees(),
+        this.loadWorkTypes(),
+      ]);
+      await Promise.all([
+        this.loadAttendance(this.inputDate),
+        this.loadAllocations(this.inputDate),
+        this.loadTodayEntries(this.inputDate),
+      ]);
       this.render();
       this._maybeAutoStartGuide();
       this.scheduleInitialSync();
@@ -94,11 +107,16 @@ class BrigadeAssistant {
     if (this.estate) {
       await this.loadQuarters();
     }
-    await this.loadEmployees();
-    await this.loadWorkTypes();
-    await this.loadAttendance(this.inputDate);
-    await this.loadAllocations(this.inputDate);
-    await this.loadTodayEntries(this.inputDate);
+    await Promise.all([
+      this.preloadCells(),
+      this.loadEmployees(),
+      this.loadWorkTypes(),
+    ]);
+    await Promise.all([
+      this.loadAttendance(this.inputDate),
+      this.loadAllocations(this.inputDate),
+      this.loadTodayEntries(this.inputDate),
+    ]);
     this.render();
     this.scheduleInitialSync();
   }
@@ -296,6 +314,17 @@ class BrigadeAssistant {
     } catch (e) {
       return [];
     }
+  }
+
+  // Загружает инвентарь каждого квартала заранее. GET-запросы сохраняются
+  // Service Worker и после этого выбор клетки работает без интернета.
+  async preloadCells() {
+    if (!this.estate || !Array.isArray(this.quarters)) return;
+    await Promise.allSettled(
+      this.quarters
+        .filter(q => q && q.id != null)
+        .map(q => this.loadCells(q.id))
+    );
   }
 
   async loadEmployees() {
